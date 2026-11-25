@@ -4,3 +4,5 @@ docs/superpowers/
 TASKY-*.md
 linux-mongo.md
 blockers.md
+# Candidate name is written at build time from a release secret
+tasky/wizexercise.txt
