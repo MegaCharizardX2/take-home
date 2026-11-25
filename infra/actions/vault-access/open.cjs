@@ -93,6 +93,10 @@ async function open() {
 
   // Register cleanup before ARM can accept the first write.
   fs.appendFileSync(process.env.GITHUB_STATE, "subscription=" + subscription + "\nvault=" + vault + "\nip=" + ip + "\n");
+  if (process.env.VAULT_ACCESS_LEASE_FILE) {
+    fs.writeFileSync(process.env.VAULT_ACCESS_LEASE_FILE, JSON.stringify({ subscription, vault, ip }),
+      { mode: 0o600, flag: "wx" });
+  }
   try {
     patch(url, {
       publicNetworkAccess: "Enabled",

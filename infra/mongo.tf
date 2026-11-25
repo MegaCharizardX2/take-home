@@ -8,6 +8,7 @@ resource "azurerm_public_ip" "mongo" {
   tags                = local.tags
 }
 
+#trivy:ignore:AZU-0076:exp:2026-12-08
 resource "azurerm_network_interface" "mongo" {
   name                = "nic-mongo"
   location            = local.location
@@ -66,7 +67,6 @@ resource "azurerm_linux_virtual_machine" "mongo" {
   tags = local.tags
   lifecycle { ignore_changes = [tags["lab-keep-running"]] }
   depends_on = [
-    azurerm_role_assignment.mongo_disk_key,
     azurerm_network_interface_security_group_association.mongo,
     azurerm_subnet_network_security_group_association.lab,
     azurerm_network_security_rule.mongo,
@@ -80,8 +80,12 @@ resource "azurerm_disk_encryption_set" "mongo" {
   resource_group_name       = local.rg.name
   key_vault_key_id          = azurerm_key_vault_key.mongo_disk.versionless_id
   auto_key_rotation_enabled = true
-  identity { type = "SystemAssigned" }
-  tags = local.tags
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [local.identities["id-disk-cmk"].id]
+  }
+  depends_on = [azurerm_role_assignment.mongo_disk_key]
+  tags       = local.tags
 }
 
 resource "azurerm_managed_disk" "data" {
@@ -95,7 +99,6 @@ resource "azurerm_managed_disk" "data" {
   network_access_policy         = "DenyAll"
   public_network_access_enabled = false
   disk_encryption_set_id        = azurerm_disk_encryption_set.mongo.id
-  depends_on                    = [azurerm_role_assignment.mongo_disk_key]
   tags                          = local.tags
 }
 

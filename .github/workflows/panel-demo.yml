@@ -1,0 +1,47 @@
+name: Panel demo
+on:
+  workflow_dispatch:
+
+permissions: {}
+concurrency:
+  group: outpost-infra
+  cancel-in-progress: false
+
+jobs:
+  demonstrate:
+    if: github.repository == 'MegaCharizardX2/take-home' && github.ref == 'refs/heads/main'
+    environment: infra
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Sign in as takehome-id
+        run: bash infra/pipeline/azure-login.sh
+      - name: Verify annotation and admission results through AKS Run Command
+        working-directory: infra/pipeline
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ $ARM_SUBSCRIPTION_ID =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]]
+          [[ $GITHUB_RUN_ID =~ ^[0-9]+$ && $GITHUB_RUN_ATTEMPT =~ ^[0-9]+$ ]]
+          private=$(mktemp -d "$RUNNER_TEMP/outpost-panel.XXXXXXXX")
+          trap 'rm -rf -- "$private"' EXIT
+          if ! az aks command invoke -g takehome-rg -n aks-outpost --file panel-demo.sh \
+            --command "bash panel-demo.sh $ARM_SUBSCRIPTION_ID $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --only-show-errors -o json >"$private/result.json" 2>"$private/arm.log"; then
+            echo 'FAIL AKS Run Command' >&2
+            exit 1
+          fi
+          python3 panel-result.py "$private/result.json"
+      - name: Remove the private Azure CLI session
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/outpost-azure"

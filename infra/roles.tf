@@ -70,11 +70,28 @@ resource "azurerm_role_assignment" "crypto_officer" {
   principal_type       = "ServicePrincipal"
 }
 
-# The Owner adds this generated principal to the delegation condition after
-# the one-time DES bootstrap. Both disk creates wait for the key-scoped grant.
 resource "azurerm_role_assignment" "mongo_disk_key" {
   scope                = azurerm_key_vault_key.mongo_disk.resource_versionless_id
   role_definition_name = "Key Vault Crypto Service Encryption User"
-  principal_id         = azurerm_disk_encryption_set.mongo.identity[0].principal_id
+  principal_id         = local.identities["id-disk-cmk"].principal_id
   principal_type       = "ServicePrincipal"
+}
+
+# The Owner defines this before granting delegation. Outpost assigns it to
+# id-mongo on the backup container after the baseline evidence is collected.
+data "azurerm_role_definition" "backup_writer" {
+  name  = "Lab Backup Writer"
+  scope = local.rg.id
+  lifecycle {
+    postcondition {
+      condition = length(self.permissions) == 1 && alltrue([for p in self.permissions :
+        length(p.actions) == 0 && length(p.not_actions) == 0 && length(p.not_data_actions) == 0 &&
+        toset([for action in p.data_actions : lower(action)]) == toset([
+          "microsoft.storage/storageaccounts/blobservices/containers/blobs/write",
+          "microsoft.storage/storageaccounts/blobservices/containers/blobs/add/action"
+        ])
+      ])
+      error_message = "Lab Backup Writer must have only blob write and add data actions."
+    }
+  }
 }

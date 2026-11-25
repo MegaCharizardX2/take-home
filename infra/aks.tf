@@ -32,23 +32,24 @@ resource "azapi_resource" "aks" {
         { name = "system", mode = "System", size = "Standard_D4as_v5", count = 2, zones = ["1", "2"] },
         { name = "web", mode = "User", size = "Standard_D2as_v5", count = 1, zones = ["1"] }
         ] : {
-        name               = pool.name
-        mode               = pool.mode
-        type               = "VirtualMachineScaleSets"
-        vmSize             = pool.size
-        count              = pool.count
-        availabilityZones  = pool.zones
-        vnetSubnetID       = azurerm_subnet.lab["nodes"].id
-        enableNodePublicIP = false
-        enableAutoScaling  = false
-        osType             = "Linux"
-        osSKU              = "AzureLinux3"
-        osDiskType         = "Managed"
-        osDiskSizeGB       = 64
-        nodeLabels         = pool.name == "web" ? { workload = "web" } : {}
-        nodeTaints         = pool.name == "web" ? ["workload=web:NoSchedule"] : []
-        upgradeSettings    = { maxSurge = "1" }
-        securityProfile    = { sshAccess = "Disabled" }
+        name                   = pool.name
+        mode                   = pool.mode
+        type                   = "VirtualMachineScaleSets"
+        vmSize                 = pool.size
+        count                  = pool.count
+        availabilityZones      = pool.zones
+        vnetSubnetID           = azurerm_subnet.lab["nodes"].id
+        enableNodePublicIP     = false
+        enableEncryptionAtHost = true
+        enableAutoScaling      = false
+        osType                 = "Linux"
+        osSKU                  = "AzureLinux3"
+        osDiskType             = "Managed"
+        osDiskSizeGB           = 64
+        nodeLabels             = pool.name == "web" ? { workload = "web" } : {}
+        nodeTaints             = pool.name == "web" ? ["workload=web:NoSchedule"] : []
+        upgradeSettings        = { maxSurge = "1" }
+        securityProfile        = { sshAccess = "Disabled" }
       }]
       networkProfile = {
         networkPlugin     = "azure"

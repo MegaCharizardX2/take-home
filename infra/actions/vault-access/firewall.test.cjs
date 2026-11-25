@@ -4,6 +4,9 @@ const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const timers = require("node:timers/promises");
 const { open, close } = require("./open.cjs");
+const { cleanup } = require("./close.cjs");
+const os = require("node:os");
+const path = require("node:path");
 
 const sub = "00000000-0000-0000-0000-000000000001";
 const name = "kv-outpost-0123456789";
@@ -73,4 +76,24 @@ test("a pre-existing IP rule prevents opening the public endpoint", async t => {
   p.networkAcls.ipRules.push({ value: "1.1.1.1/32" });
   await assert.rejects(open(), /closed baseline/);
   assert.equal(p.publicNetworkAccess, "Disabled");
+});
+
+test("the explicit cleanup and post-action share one private lease", async t => {
+  const p = runner(t);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vault-lease-"));
+  const lease = path.join(dir, "lease.json");
+  const previous = process.env.VAULT_ACCESS_LEASE_FILE;
+  process.env.VAULT_ACCESS_LEASE_FILE = lease;
+  t.after(() => {
+    if (previous === undefined) delete process.env.VAULT_ACCESS_LEASE_FILE;
+    else process.env.VAULT_ACCESS_LEASE_FILE = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  await open();
+  assert.equal(fs.statSync(lease).mode & 0o777, 0o600);
+  await cleanup();
+  assert.equal(p.publicNetworkAccess, "Disabled");
+  assert.deepEqual(p.networkAcls.ipRules, []);
+  assert.equal(fs.existsSync(lease), false);
+  await cleanup();
 });

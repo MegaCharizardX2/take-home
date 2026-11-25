@@ -41,13 +41,15 @@ resource "azurerm_subnet_network_security_group_association" "lab" {
 }
 
 resource "azurerm_public_ip" "ingress" {
-  name                = "pip-ingress"
-  location            = local.location
-  resource_group_name = local.rg.name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  zones               = ["1", "2", "3"]
-  tags                = local.tags
+  name                    = "pip-ingress"
+  location                = local.location
+  resource_group_name     = local.rg.name
+  allocation_method       = "Static"
+  domain_name_label       = "outpost-${random_id.instance.hex}"
+  domain_name_label_scope = "NoReuse"
+  sku                     = "Standard"
+  zones                   = ["1", "2", "3"]
+  tags                    = local.tags
 }
 
 resource "azurerm_network_security_rule" "mongo" {

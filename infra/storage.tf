@@ -1,4 +1,5 @@
 #trivy:ignore:AZU-0012:exp:2026-12-08
+#trivy:ignore:AZU-0060:exp:2026-12-08
 resource "azurerm_storage_account" "backup" {
   name                              = "stoutpost${random_id.instance.hex}"
   resource_group_name               = local.rg.name

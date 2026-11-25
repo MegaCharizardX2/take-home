@@ -13,6 +13,12 @@ scope=$(jq -er .id <<<"$current")
 subscription=$(az account show --query id -o tsv)
 expected="/subscriptions/$subscription/resourceGroups/$group/providers/Microsoft.Storage/storageAccounts/$account"
 jq -ne --arg actual "$scope" --arg expected "$expected" '($actual | ascii_downcase) == ($expected | ascii_downcase)' >/dev/null
+# An unexpected policy allow must never briefly expose an old container ACL.
+az rest --method get --url "https://management.azure.com$scope/blobServices/default/containers?api-version=2025-08-01" \
+    --only-show-errors | jq -e '
+      (.nextLink // "") == "" and (.value | length) == 1 and
+      .value[0].name == "backups" and (.value[0].properties.publicAccess // "None") == "None"
+    ' >/dev/null
 assignment="/subscriptions/$subscription/providers/Microsoft.Authorization/policyAssignments/SecurityCenterBuiltIn"
 error=$(mktemp)
 trap 'rm -f -- "$error"' EXIT
@@ -22,9 +28,8 @@ if az rest --method patch --url "$endpoint" --body '{"properties":{"allowBlobPub
     echo "The expected policy denial did not occur. Closed the account again." >&2
     exit 1
 fi
-cat "$error" >&2
 grep -Fq 'RequestDisallowedByPolicy' "$error"
 grep -Fiq "$assignment" "$error"
 grep -Fq 'StorageDisallowPublicAccess' "$error"
 az storage account show -g "$group" -n "$account" -o json | jq -e '.allowBlobPublicAccess == false' >/dev/null
-printf 'Confirmed policy denial for %s under %s\n' "$scope" "$assignment"
+printf 'RequestDisallowedByPolicy for %s under %s (StorageDisallowPublicAccess)\n' "$scope" "$assignment"

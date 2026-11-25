@@ -1,5 +1,6 @@
 variable "ssh_public_key" {
   type        = string
+  sensitive   = true
   description = "Operator's RSA SSH public key (at least 2048 bits) for the MongoDB VM."
   validation {
     condition     = can(regex("^ssh-rsa [A-Za-z0-9+/]+={0,2}( [^\r\n]*)?$", trimspace(var.ssh_public_key)))
@@ -9,6 +10,7 @@ variable "ssh_public_key" {
 
 variable "alert_email" {
   type        = string
+  sensitive   = true
   description = "Email destination for the action group and budget, supplied by the protected job."
   validation {
     condition     = can(regex("^[^ @]+@[^ @]+[.][^ @]+$", var.alert_email))

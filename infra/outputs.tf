@@ -18,6 +18,11 @@ output "ingress_ip" {
   value       = azurerm_public_ip.ingress.ip_address
 }
 
+output "ingress_fqdn" {
+  description = "Azure DNS name for the Traefik host and Let's Encrypt certificate."
+  value       = azurerm_public_ip.ingress.fqdn
+}
+
 output "workspace_name" {
   description = "Workspace for the Owner's subscription Activity Log export."
   value       = azurerm_log_analytics_workspace.lab.name
@@ -29,6 +34,11 @@ output "vault_name" {
 }
 
 output "disk_encryption_principal_id" {
-  description = "System-assigned DES principal for the Owner's role-delegation condition."
-  value       = azurerm_disk_encryption_set.mongo.identity[0].principal_id
+  description = "Pre-created id-disk-cmk principal in the Owner's delegation condition."
+  value       = local.identities["id-disk-cmk"].principal_id
+}
+
+output "backup_writer_role_id" {
+  description = "Owner-defined role reserved for the Outpost container-scoped writer grant."
+  value       = basename(data.azurerm_role_definition.backup_writer.id)
 }

@@ -67,6 +67,8 @@ resource "azurerm_monitor_activity_log_alert" "lab" {
   for_each = {
     exemption = { scope = local.rg.id, op = "Microsoft.Authorization/policyExemptions/write" }
     backup    = { scope = azurerm_storage_account.backup.id, op = "Microsoft.Storage/storageAccounts/write" }
+    nsg       = { scope = local.rg.id, op = "Microsoft.Network/networkSecurityGroups/securityRules/write" }
+    role      = { scope = local.rg.id, op = "Microsoft.Authorization/roleAssignments/write" }
   }
   name                = "outpost-${each.key}-write"
   resource_group_name = local.rg.name
