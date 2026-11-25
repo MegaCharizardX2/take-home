@@ -285,6 +285,30 @@ def render(work):
             print('~~~\n\n</details>', file=summary)
 
 
+def public_route(_work):
+    host = env('INGRESS_FQDN', FQDN)
+    https = f'https://{host}/readyz'
+    targets = (https.encode(), f'https://{host}:443/readyz'.encode())
+    # Disable curl startup config and proxies so these requests are anonymous and direct.
+    curl = ['curl', '-q', '--noproxy', '*', '--silent', '--max-time', '8', '--max-filesize', '65536',
+            '--output', os.devnull, '--write-out']
+    for delay in (0, 5, 10, 20, 40, 60):
+        if delay:
+            time.sleep(delay)
+        try:
+            ready = run(curl + ['%{http_code} %{size_download}', https], timeout=10)
+            require(ready == b'200 0', 'HTTPS readiness check failed')
+            redirect = run(curl + ['%{http_code} %{redirect_url}', f'http://{host}/readyz'], timeout=10)
+            status, _, target = redirect.partition(b' ')
+            require(status in (b'301', b'302', b'303', b'307', b'308') and target in targets,
+                    'HTTP redirect check failed')
+        except Failure:
+            continue
+        record('Public HTTPS readiness and HTTP redirect verified')
+        return
+    raise Failure('Public HTTPS readiness or HTTP redirect verification failed')
+
+
 def deploy(work):
     require(hashlib.sha256((work / 'deploy.yaml').read_bytes()).hexdigest() == (work / 'scanned.sha256').read_text(),
             'Deployment changed after scan')
@@ -319,7 +343,8 @@ def main():
     work = Path(os.environ['RUNNER_TEMP']) / 'outpost-cluster'
     work.mkdir(exist_ok=True, mode=0o700)
     actions = {'gate': lambda w: gate(w, 'infra'), 'release-gate': lambda w: gate(w, 'release'),
-               'setup': setup, 'secret': secret, 'traefik': traefik, 'reader': reader, 'render': render, 'deploy': deploy, 'verify': verify}
+               'setup': setup, 'secret': secret, 'traefik': traefik, 'reader': reader, 'render': render, 'deploy': deploy,
+               'verify': verify, 'public-route': public_route}
     actions[sys.argv[1]](work)
 
 

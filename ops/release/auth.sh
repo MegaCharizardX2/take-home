@@ -14,9 +14,12 @@ else
     [[ $mode == release ]] || exit 1
     [[ $(kubectl auth can-i patch deployments.apps -n wiz-web) == yes ]] || exit 1
     [[ $(kubectl auth can-i list nodes) == yes ]] || exit 1
-    denial=0
-    evidence=$(kubectl auth can-i create configmaps -n wiz-evidence) || denial=$?
-    [[ $denial == 1 && $evidence == no ]] || exit 1
+    # A denial can include an authorizer reason. Only the decision and evaluation error matter.
+    decision=$(kubectl create -f - -o 'jsonpath={.status.allowed}{"|"}{.status.evaluationError}{"|"}' <<'JSON'
+{"apiVersion":"authorization.k8s.io/v1","kind":"SelfSubjectAccessReview","spec":{"resourceAttributes":{"namespace":"wiz-evidence","verb":"create","group":"","resource":"configmaps"}}}
+JSON
+    ) || exit 1
+    [[ $decision == 'false||' ]] || exit 1
     if message=$(kubectl -n wiz-evidence create configmap outpost-release-boundary-check \
         --from-literal=marker=synthetic --dry-run=server -o name 2>&1); then exit 1; fi
     [[ $message == *'(Forbidden)'* && $message == *'cannot create resource "configmaps"'* \

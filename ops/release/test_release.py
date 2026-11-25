@@ -116,24 +116,85 @@ class Release(unittest.TestCase):
 
     def test_authorization_wrong_identity_and_namespace_denial(self):
         kubectl = self.path / 'kubectl'
-        kubectl.write_text("""#!/bin/sh
-case "$*" in
-  *whoami*) echo "$MOCK_PRINCIPAL" ;;
-  *'create configmap outpost-release-boundary-check'*) echo 'Error from server (Forbidden): User cannot create resource "configmaps" in the namespace "wiz-evidence"' >&2; exit 1 ;;
-  *wiz-evidence*) echo "$MOCK_DENIAL"; exit "$MOCK_STATUS" ;;
-  *can-i*) echo yes ;;
-  *) exit 1 ;;
-esac
-""")
+        kubectl.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+if args == ['auth', 'whoami', '-o', 'jsonpath={.status.userInfo.username}']:
+    print(os.environ['MOCK_PRINCIPAL'])
+elif args in (['auth', 'can-i', 'patch', 'deployments.apps', '-n', 'wiz-web'], ['auth', 'can-i', 'list', 'nodes']):
+    print('yes')
+elif args == ['create', '-f', '-', '-o', 'jsonpath={.status.allowed}{"|"}{.status.evaluationError}{"|"}']:
+    Path('review.json').write_text(sys.stdin.read())
+    status = json.loads(os.environ['MOCK_REVIEW'])
+    print(str(status.get('allowed', '')).lower(), status.get('evaluationError', ''), '', sep='|')
+    sys.exit(int(os.environ['MOCK_STATUS']))
+elif args == ['-n', 'wiz-evidence', 'create', 'configmap', 'outpost-release-boundary-check',
+              '--from-literal=marker=synthetic', '--dry-run=server', '-o', 'name']:
+    print(os.environ['MOCK_DRY_REASON'], file=sys.stderr)
+    sys.exit(int(os.environ['MOCK_DRY_STATUS']))
+else:
+    sys.exit(1)
+''')
         kubectl.chmod(0o700)
         (self.path / 'auth.txt').write_text(f'{SUB} {SUB} release\n')
-        for principal, response, status, expected in [(SUB, 'no', 1, 0), ('unexpected', 'no', 1, 42),
-                                                       (SUB, 'yes', 0, 1), (SUB, 'Forbidden', 1, 1)]:
-            with self.subTest(principal=principal, response=response):
+        reason = 'Error from server (Forbidden): User cannot create resource "configmaps" in the namespace "wiz-evidence": Azure does not have access'
+        denial = {'allowed': False, 'reason': 'Azure does not have access'}
+        cases = [(SUB, denial, 0, reason, 1, 0), ('unexpected', denial, 0, reason, 1, 42),
+                 (SUB, {'allowed': True}, 0, reason, 1, 1), (SUB, dict(denial, evaluationError='webhook unavailable'), 0, reason, 1, 1),
+                 (SUB, {}, 0, reason, 1, 1), (SUB, denial, 2, reason, 1, 1),
+                 (SUB, denial, 0, '', 0, 1), (SUB, denial, 0, 'connection refused', 1, 1)]
+        for principal, review, status, dry_reason, dry_status, expected in cases:
+            with self.subTest(principal=principal, review=review, status=status, dry_reason=dry_reason):
                 env = dict(os.environ, PATH=f"{self.path}:{os.environ['PATH']}", MOCK_PRINCIPAL=principal,
-                           MOCK_DENIAL=response, MOCK_STATUS=str(status))
+                           MOCK_REVIEW=json.dumps(review), MOCK_STATUS=str(status), MOCK_DRY_REASON=dry_reason, MOCK_DRY_STATUS=str(dry_status))
                 reply = subprocess.run(['bash', cluster.SCRIPTS / 'auth.sh'], cwd=self.path, env=env, capture_output=True)
                 self.assertEqual(reply.returncode, expected)
+                self.assertEqual(reply.stdout + reply.stderr, b'')
+        self.assertEqual(json.loads((self.path / 'review.json').read_text()), {
+            'apiVersion': 'authorization.k8s.io/v1', 'kind': 'SelfSubjectAccessReview',
+            'spec': {'resourceAttributes': {'namespace': 'wiz-evidence', 'verb': 'create', 'group': '', 'resource': 'configmaps'}}})
+
+    def test_public_route_retries_tls_then_checks_direct_anonymous_gets(self):
+        host = ENV['INGRESS_FQDN']
+        for port in ('', ':443'):
+            with self.subTest(port=port), patch.object(cluster, 'time') as clock, patch.object(cluster, 'record') as record, \
+                    patch.object(cluster, 'run', side_effect=[cluster.Failure('TLS'), b'200 0',
+                                 f'308 https://{host}{port}/readyz'.encode()]) as run:
+                cluster.public_route(self.path)
+                clock.sleep.assert_called_once_with(5)
+                self.assertEqual([call.args[0][-1] for call in run.call_args_list],
+                                 [f'https://{host}/readyz', f'https://{host}/readyz', f'http://{host}/readyz'])
+                for call in run.call_args_list:
+                    args = call.args[0]
+                    self.assertEqual(args[:4], ['curl', '-q', '--noproxy', '*'])
+                    self.assertEqual(args[4:-2], ['--silent', '--max-time', '8', '--max-filesize', '65536',
+                                                  '--output', os.devnull, '--write-out'])
+                    self.assertEqual(call.kwargs, {'timeout': 10})
+                self.assertEqual([call.args[0][-2] for call in run.call_args_list],
+                                 ['%{http_code} %{size_download}'] * 2 + ['%{http_code} %{redirect_url}'])
+                record.assert_called_once_with('Public HTTPS readiness and HTTP redirect verified')
+
+    def test_public_route_fails_closed_without_printing_remote_data(self):
+        host = ENV['INGRESS_FQDN']
+        cases = [(b'503 0', b''), (b'200 7', b''), (b'200 0', f'200 https://{host}/readyz'.encode()),
+                 (b'200 0', b'308 https://other.invalid/readyz'), (b'200 0', f'301 https://{host}/login'.encode()),
+                 (b'200 0', f'302 http://{host}/readyz'.encode())]
+        for ready, redirect in cases:
+            def reply(args, **kwargs):
+                return ready if args[-1].startswith('https://') else redirect
+
+            with self.subTest(ready=ready, redirect=redirect), patch.object(cluster, 'time') as clock, \
+                    patch.object(cluster, 'run', side_effect=reply) as run, patch.object(cluster, 'record') as record:
+                with self.assertRaisesRegex(cluster.Failure, '^Public HTTPS readiness or HTTP redirect verification failed$'):
+                    cluster.public_route(self.path)
+                self.assertEqual(clock.sleep.call_count, 5)
+                self.assertLessEqual(run.call_count, 12)
+                record.assert_not_called()
+        with patch.dict(os.environ, INGRESS_FQDN='wrong.invalid'), patch.object(cluster, 'run') as run:
+            with self.assertRaises(cluster.Failure):
+                cluster.public_route(self.path)
+            run.assert_not_called()
 
     def test_remote_placement_and_marker_evidence(self):
         # kubectl fixture emits the projected fields for a current rollout and two pods.

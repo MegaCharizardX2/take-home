@@ -85,6 +85,8 @@ jobs:
         env:
           CANDIDATE_NAME: ${{ secrets.CANDIDATE_NAME }}
         run: python3 ops/release/cluster.py verify
+      - name: Verify public TLS readiness and HTTP redirect
+        run: python3 ops/release/cluster.py public-route
       - name: Remove private inputs and Azure session
         if: always()
         run: rm -rf -- "$RUNNER_TEMP/outpost-cluster" "$RUNNER_TEMP/outpost-azure"
