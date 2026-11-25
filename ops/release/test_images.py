@@ -41,6 +41,7 @@ elif [[ $1 == run && $* == *test-scanner* ]]; then
 elif [[ $1 == login ]]; then
     read -r token; [[ $token == synthetic-refresh ]] || exit 9
 elif [[ $1 == push ]]; then
+    [[ $2 == --platform && $3 == linux/amd64 ]] || exit 9
     printf '%s: digest: sha256:%064d size: 10\\n' "$GITHUB_SHA" 2
 elif [[ $1 == buildx ]]; then
     value=1; [[ ${MOCK_ERROR:-} != config ]] || value=3
@@ -68,7 +69,10 @@ fi
         result = self.phase('push')
         self.assertEqual(result.returncode, 0, result.stderr)
         outputs = (self.path / 'outputs').read_text().splitlines()
-        self.assertEqual(outputs, [f'{repo}=sha256:{2:064d}' for repo in ('tasky', 'busybox')] + ['revision=' + '1' * 40])
+        expected = []
+        for repo in ('tasky', 'busybox'):
+            expected.extend([f'{repo}=sha256:{2:064d}', f'{repo}_config=sha256:{1:064d}'])
+        self.assertEqual(outputs, expected + ['revision=' + '1' * 40])
 
     def test_malformed_private_inputs_scans_and_config_mismatch_fail_closed(self):
         self.assertNotEqual(self.phase('build', CANDIDATE_NAME='').returncode, 0)

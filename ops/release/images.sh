@@ -56,12 +56,12 @@ case $1 in
             config=$(cat "$private/$repo.id")
             [[ $config =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
             docker tag "$config" "$tag"
-            docker push "$tag" > "$private/push.log"
+            docker push --platform linux/amd64 "$tag" > "$private/push.log"
             digest=$(sed -nE 's/^[^ ]+: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p' "$private/push.log")
             [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
             docker buildx imagetools inspect --raw "$ACR_LOGIN_SERVER/$repo@$digest" | \
                 jq -e --arg config "$config" '.schemaVersion == 2 and (.config.digest == $config) and (.layers | type == "array")' >/dev/null
-            printf '%s=%s\n' "$repo" "$digest" >> "$GITHUB_OUTPUT"
+            printf '%s=%s\n%s_config=%s\n' "$repo" "$digest" "$repo" "$config" >> "$GITHUB_OUTPUT"
         done
         printf 'revision=%s\n' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
         ;;
