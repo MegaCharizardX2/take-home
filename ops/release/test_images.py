@@ -1,8 +1,12 @@
 """Exercise the real publisher script with local command doubles."""
 import os
+import hashlib
+from io import BytesIO
+import json
 from pathlib import Path
 import subprocess
 import tempfile
+import tarfile
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -18,6 +22,17 @@ class Images(unittest.TestCase):
         self.env = dict(os.environ, RUNNER_TEMP=work.name, PATH=f"{self.path / 'tools'}:{os.environ['PATH']}",
                         GITHUB_OUTPUT=str(self.path / 'outputs'), GITHUB_SHA='1' * 40, TRIVY='test-scanner',
                         ARM_TENANT_ID='aaaaaaaa-0000-0000-0000-aaaaaaaaaaaa', ACR_LOGIN_SERVER='acroutpost123456789a.azurecr.io')
+        data = json.dumps({"os": "linux", "architecture": "amd64"}).encode()
+        self.config = hashlib.sha256(data).hexdigest()
+        self.env["MOCK_CONFIG"] = self.config
+        for repo in ("tasky", "busybox"):
+            with tarfile.open(self.path / (repo + ".tar"), "w") as archive:
+                config = "blobs/sha256/" + self.config
+                manifest = [{"Config": config, "RepoTags": [repo + ":" + self.env["GITHUB_SHA"]]}]
+                for name, body in [(config, data), ("manifest.json", json.dumps(manifest).encode())]:
+                    item = tarfile.TarInfo(name)
+                    item.size = len(body)
+                    archive.addfile(item, BytesIO(body))
         docker = self.path / 'tools/docker'
         docker.write_text('''#!/usr/bin/env bash
 set -eu
@@ -34,7 +49,8 @@ elif [[ $1 == image && $* == *Architecture* ]]; then
 elif [[ $1 == image ]]; then
     printf 'sha256:%064d\\n' 1
 elif [[ $1 == save ]]; then
-    touch "$3"
+    repo=${4%%:*}
+    cp "$RUNNER_TEMP/$repo.tar" "$3"
 elif [[ $1 == run && $* == *test-scanner* ]]; then
     [[ -f "$RUNNER_TEMP/outpost-images/image.tar" && $* == *UNKNOWN,HIGH,CRITICAL* ]] || exit 9
     [[ ${MOCK_ERROR:-} != scan ]] || exit 1
@@ -44,8 +60,8 @@ elif [[ $1 == push ]]; then
     [[ $2 == --platform && $3 == linux/amd64 ]] || exit 9
     printf '%s: digest: sha256:%064d size: 10\\n' "$GITHUB_SHA" 2
 elif [[ $1 == buildx ]]; then
-    value=1; [[ ${MOCK_ERROR:-} != config ]] || value=3
-    printf '{"schemaVersion":2,"config":{"digest":"sha256:%064d"},"layers":[]}' "$value"
+    value=$MOCK_CONFIG; [[ ${MOCK_ERROR:-} != config ]] || value=bad
+    printf '{"schemaVersion":2,"config":{"digest":"sha256:%s"},"layers":[]}' "$value"
 else
     exit 9
 fi
@@ -71,7 +87,7 @@ fi
         outputs = (self.path / 'outputs').read_text().splitlines()
         expected = []
         for repo in ('tasky', 'busybox'):
-            expected.extend([f'{repo}=sha256:{2:064d}', f'{repo}_config=sha256:{1:064d}'])
+            expected.extend([f'{repo}=sha256:{2:064d}', f'{repo}_config=sha256:{self.config}'])
         self.assertEqual(outputs, expected + ['revision=' + '1' * 40])
 
     def test_malformed_private_inputs_scans_and_config_mismatch_fail_closed(self):

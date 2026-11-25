@@ -72,11 +72,16 @@ jobs:
       - name: Build and scan Tasky
         run: |
           [[ -d tasky ]] || { echo "No tasky directory yet"; exit 0; }
+          umask 077
+          trap 'rm -f -- tasky/wizexercise.txt "$RUNNER_TEMP/tasky.tar"' EXIT
           # The real name comes from a release secret in Pipeline 2; PRs build with a placeholder.
           printf 'CI placeholder\n' > tasky/wizexercise.txt
-          docker build -t tasky:ci tasky
+          docker build --platform linux/amd64 -t tasky:ci tasky
           docker save -o "$RUNNER_TEMP/tasky.tar" tasky:ci
           docker run --rm -v "$RUNNER_TEMP/tasky.tar:/tasky.tar:ro" -v "$PWD:/src:ro" -w /src "$TRIVY" image --input /tasky.tar --exit-code 1 --severity UNKNOWN,HIGH,CRITICAL
+      - name: Exercise the scanned amd64 image with authenticated MongoDB
+        if: hashFiles('tasky/Dockerfile') != ''
+        run: python3 tests/tasky/smoke.py --image tasky:ci --mongo-platform linux/amd64
 
   review-rehearsal:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'

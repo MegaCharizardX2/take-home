@@ -31,8 +31,10 @@ case $1 in
         for repo in tasky busybox; do
             tag="$repo:$GITHUB_SHA"
             [[ $(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$tag") == linux/amd64 ]] || exit 1
-            docker image inspect -f '{{.Id}}' "$tag" > "$private/$repo.id"
+            docker image inspect -f '{{.Id}}' "$tag" > "$private/$repo.localid"
             docker save -o "$private/image.tar" "$tag"
+            python3 "$(dirname "$0")/image-config.py" "$private/image.tar" "$tag" > "$private/$repo.id"
+            [[ $(docker image inspect -f '{{.Id}}' "$tag") == "$(cat "$private/$repo.localid")" ]] || exit 1
             if ! docker run --rm -v "$private/image.tar:/image.tar:ro" "$TRIVY" image --input /image.tar \
                 --format json --exit-code 1 --severity UNKNOWN,HIGH,CRITICAL > "$private/scan.json" 2> "$private/scan.log"; then
                 echo "Trivy failed for $repo" >&2
@@ -56,7 +58,8 @@ case $1 in
             tag="$ACR_LOGIN_SERVER/$repo:$GITHUB_SHA"
             config=$(cat "$private/$repo.id")
             [[ $config =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-            docker tag "$config" "$tag"
+            docker tag "$repo:$GITHUB_SHA" "$tag"
+            [[ $(docker image inspect -f '{{.Id}}' "$tag") == "$(cat "$private/$repo.localid")" ]] || exit 1
             docker push --platform linux/amd64 "$tag" > "$private/push.log"
             digest=$(sed -nE 's/^[^ ]+: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p' "$private/push.log")
             [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1

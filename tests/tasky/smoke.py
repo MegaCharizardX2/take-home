@@ -28,7 +28,7 @@ def private_env(path, values):
             out.write(f"{k}={v}\n")
 
 
-def run(image, browser):
+def run(image, browser, mongo_platform):
     label = "tasky-test-" + secrets.token_hex(5)
     db, app = label + "-db", label + "-app"
     db_password, key, user_password = (secrets.token_hex(32) for _ in range(3))
@@ -44,7 +44,10 @@ def run(image, browser):
         docker("network", "create", front)
         cleanup.callback(docker, "network", "rm", front, ok=False)
         cleanup.callback(docker, "rm", "-fv", db, ok=False)
-        docker("run", "-d", "--name", db, "--network", label, "--network-alias", "mongo.wiz.internal",
+        if not mongo_platform:
+            mongo_platform = docker("version", "--format", "{{.Server.Os}}/{{.Server.Arch}}").stdout.strip()
+        assert mongo_platform in ("linux/amd64", "linux/arm64")
+        docker("run", "-d", "--platform", mongo_platform, "--name", db, "--network", label, "--network-alias", "mongo.wiz.internal",
                "--env-file", str(p / "db.env"), "mongo:6.0.26@sha256:0a83b2f824b29c94c5284a49b018db2e3166d9879d1edda5cce545d899ef2bbb", "--auth")
 
         def mongo(script, *, ok=True):
@@ -53,7 +56,10 @@ def run(image, browser):
 
         admin = 'db.getSiblingDB("admin").auth("local-admin",process.env.MONGO_INITDB_ROOT_PASSWORD);\n'
         for _ in range(60):
-            if mongo(admin + 'if(db.version()!=="6.0.26")quit(1);db.getSiblingDB("admin").getUsers();', ok=False).returncode == 0:
+            # The image starts a temporary mongod while it creates the first user.
+            # Wait for its final server before provisioning the app user.
+            final_server = docker("exec", db, "cat", "/proc/1/comm", ok=False).stdout.strip() == "mongod"
+            if final_server and mongo(admin + 'if(db.version()!=="6.0.26")quit(1);db.getSiblingDB("admin").getUsers();', ok=False).returncode == 0:
                 break
             time.sleep(1)
         else:
@@ -158,12 +164,13 @@ def run(image, browser):
             assert r.returncode and "32 bytes" in r.stderr and db_password not in r.stderr
         if browser:
             subprocess.run(["node", str(Path(__file__).with_name("browser.cjs")), f"http://127.0.0.1:{port}"], check=True)
-        print("PASS amd64 read-only UID 10001, MongoDB 6.0.26 auth, signup/login/CRUD, BSON keys, cross-user denials, invalid sessions, startup guards and log redaction")
+        print(f"PASS amd64 read-only UID 10001, MongoDB 6.0.26 ({mongo_platform}) auth, signup/login/CRUD, BSON keys, cross-user denials, invalid sessions, startup guards and log redaction")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", default="outpost-tasky:app-test")
     parser.add_argument("--browser", action="store_true")
+    parser.add_argument("--mongo-platform", choices=["linux/amd64", "linux/arm64"])
     args = parser.parse_args()
-    run(args.image, args.browser)
+    run(args.image, args.browser, args.mongo_platform)

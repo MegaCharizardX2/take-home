@@ -57,6 +57,10 @@ spec:
           resources:
             requests: {cpu: 10m, memory: 8Mi, ephemeral-storage: 1Mi}
             limits: {cpu: 50m, memory: 32Mi, ephemeral-storage: 8Mi}
+          # The probe needs only TCP. An existing mount here prevents Kubernetes
+          # from projecting the web service account credential into the init container.
+          volumeMounts:
+            - {name: tmp, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
       containers:
         - name: web
           image: acroutpost0000000000.azurecr.io/tasky@sha256:0000000000000000000000000000000000000000000000000000000000000000

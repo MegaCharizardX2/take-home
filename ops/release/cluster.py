@@ -206,6 +206,8 @@ def traefik(work):
                     '1.36.5', '--skip-crds', '--values', 'values.yaml'], cwd=work).decode()
     trusted_image = 'docker.io/library/traefik@sha256:00c9734983e74ae35a1fc18eaee9e9da13f3dde95c4e45b3b8c3b60e0dbd2d17'
     require(re.findall(r'^\s*image:\s*(\S+)\s*$', manifest, re.MULTILINE) == [trusted_image], 'Unexpected controller image')
+    run(['docker', 'run', '--rm', TRIVY, 'image', '--image-src', 'remote', '--platform', 'linux/amd64',
+         '--severity', 'UNKNOWN,HIGH,CRITICAL', '--exit-code', '1', '--format', 'json', trusted_image], timeout=420)
     write(work / 'controller.yaml', manifest)
     scan(work, {'controller.yaml': work / 'controller.yaml', 'platform/network.yaml': ROOT / 'k8s/platform/network.yaml'}, ['docker.io'])
     address = ipaddress.IPv4Address(arm('network', 'public-ip', 'show', '-g', 'takehome-rg', '-n', 'pip-ingress', '--query', 'ipAddress'))
@@ -263,7 +265,7 @@ def render(work):
     sha, images = release()
     fqdn = env('INGRESS_FQDN', FQDN)
     require(fqdn.split('.')[0].removeprefix('outpost-') == env('ACR_LOGIN_SERVER', REGISTRY).split('.')[0].removeprefix('acroutpost'), 'Registry and ingress belong to different instances')
-    manifests = []
+    files = {}
     for name in ('deployment', 'service', 'ingress'):
         template = (ROOT / f'k8s/web/{name}.yaml').read_text()
         if name == 'deployment':
@@ -273,10 +275,12 @@ def render(work):
         if name == 'ingress':
             template = substitute(template, 'tasky.invalid', fqdn)
         require('acroutpost0000000000.azurecr.io/' not in template and 'tasky.invalid' not in template, 'Unresolved release placeholder')
-        manifests.append(template.strip())
+        dest = work / ('web-' + name + '.yaml')
+        write(dest, template.strip() + '\n')
+        files['web/' + name + '.yaml'] = dest
+    scan(work, {**files, 'platform/network.yaml': ROOT / 'k8s/platform/network.yaml'}, [env('ACR_LOGIN_SERVER', REGISTRY)])
     path = work / 'deploy.yaml'
-    write(path, '\n---\n'.join(manifests) + '\n')
-    scan(work, {'deploy.yaml': path, 'platform/network.yaml': ROOT / 'k8s/platform/network.yaml'}, [env('ACR_LOGIN_SERVER', REGISTRY)])
+    write(path, '---\n'.join(file.read_text() for file in files.values()))
     write(work / 'scanned.sha256', hashlib.sha256(path.read_bytes()).hexdigest())
     if 'GITHUB_STEP_SUMMARY' in os.environ:
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:

@@ -33,4 +33,4 @@ async function main() {
     await browser.close();
   }
 }
-main().catch(error => { console.error(error.message); process.exitCode = 1; });
+main().catch(() => { console.error("FAIL Chromium Tasky UI or content-security check"); process.exitCode = 1; });
