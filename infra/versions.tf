@@ -12,9 +12,10 @@ terraform {
   }
 
   required_providers {
+    # This version supports Entra-authenticated inline Queue Analytics logging.
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "= 5.15.0"
+      version = "= 4.81.0"
     }
     azapi = {
       source  = "Azure/azapi"

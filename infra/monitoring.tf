@@ -24,6 +24,15 @@ resource "azurerm_monitor_diagnostic_setting" "automation" {
   enabled_log { category = "JobLogs" }
 }
 
+resource "azurerm_monitor_diagnostic_setting" "registry" {
+  name                           = "registry-audit"
+  target_resource_id             = azurerm_container_registry.images.id
+  log_analytics_workspace_id     = azurerm_log_analytics_workspace.lab.id
+  log_analytics_destination_type = "Dedicated"
+  enabled_log { category = "ContainerRegistryLoginEvents" }
+  enabled_log { category = "ContainerRegistryRepositoryEvents" }
+}
+
 resource "azurerm_monitor_diagnostic_setting" "vault" {
   name                       = "key-audit"
   target_resource_id         = azurerm_key_vault.lab.id
@@ -73,7 +82,7 @@ resource "azurerm_monitor_activity_log_alert" "lab" {
 
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "lab" {
   for_each = {
-    binding = <<-KQL
+    binding  = <<-KQL
       AKSAuditAdmin
       | where _ResourceId =~ "${azapi_resource.aks.id}" and Stage == "ResponseComplete"
       | where tostring(ObjectRef.apiGroup) == "rbac.authorization.k8s.io" and tostring(ObjectRef.resource) == "clusterrolebindings"
@@ -81,11 +90,19 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "lab" {
       | where toint(ResponseStatus.code) between (200 .. 299) and RequestUri !contains "dryRun=All"
       | project TimeGenerated, Actor=tostring(User.username), Verb, Binding=tostring(ObjectRef.name), AuditId
     KQL
-    power   = <<-KQL
+    power    = <<-KQL
       AzureDiagnostics
       | where _ResourceId =~ "${azurerm_automation_account.lab.id}" and Category == "JobLogs"
       | where ResultType in~ ("Failed", "Suspended")
       | project TimeGenerated, ResultType, RunbookName_s
+    KQL
+    registry = <<-KQL
+      ContainerRegistryRepositoryEvents
+      | where _ResourceId =~ "${azurerm_container_registry.images.id}"
+      | where OperationName contains "Push" or OperationName contains "Delete"
+          or OperationName contains "Untag" or OperationName contains "Purge"
+      | where isempty(Identity) or Identity !in~ ("${local.identities["id-image-publisher"].principal_id}", "${local.identities["id-image-publisher"].client_id}")
+      | project TimeGenerated, OperationName, Identity, Repository, Tag, Digest, CallerIpAddress, ResultType
     KQL
   }
   name                 = "outpost-${each.key}"
@@ -104,7 +121,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "lab" {
     threshold               = 0
   }
   action { action_groups = [azurerm_monitor_action_group.lab.id] }
-  depends_on = [azurerm_monitor_diagnostic_setting.aks, azurerm_monitor_diagnostic_setting.automation]
+  depends_on = [azurerm_monitor_diagnostic_setting.aks, azurerm_monitor_diagnostic_setting.automation, azurerm_monitor_diagnostic_setting.registry]
   tags       = local.tags
 }
 

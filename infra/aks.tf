@@ -85,6 +85,7 @@ resource "azapi_resource" "aks" {
 }
 
 resource "azurerm_container_registry" "images" {
+  # In this mode, an inherited RG Contributor does not get repository access.
   name                          = "acroutpost${random_id.instance.hex}"
   resource_group_name           = local.rg.name
   location                      = local.location
@@ -92,7 +93,7 @@ resource "azurerm_container_registry" "images" {
   admin_enabled                 = false
   anonymous_pull_enabled        = false
   public_network_access_enabled = true
-  role_assignment_mode          = "LegacyRegistryPermissions"
+  role_assignment_mode          = "AbacRepositoryPermissions"
   tags                          = local.tags
 }
 

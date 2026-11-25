@@ -1,4 +1,4 @@
-# Remove these baseline waivers during the reviewed Outpost transition, by 2026-12-08.
+# Review each exception at Outpost and retire it by lab teardown on 2026-12-08.
 skip-check:
   - 'CKV_AZURE_10:public-access\.tf$'  # PDF requires public SSH to the database VM.
   - 'CKV_AZURE_119:mongo\.tf$'  # PDF requires public SSH to the database VM through its public IP.
@@ -7,6 +7,14 @@ skip-check:
   - 'CKV_AZURE_34:storage\.tf$'  # PDF requires the backup container to allow anonymous list and get in the public phase.
   - 'CKV2_AZURE_8:storage\.tf$'  # PDF requires this synthetic-backup container to be public; Activity Logs go to Log Analytics.
   - 'CKV2_AZURE_47:storage\.tf$'  # PDF requires account-level opt-in for public read and listing of backups.
-  - 'CKV2_AZURE_33:storage\.tf$'  # PDF introduces the private backup path during Outpost after the public baseline.
   - 'CKV2_AZURE_1:storage\.tf$'  # PDF introduces the backup customer-managed key during Outpost remediation.
   - 'CKV2_AZURE_21:storage\.tf$'  # PDF requires container-level anonymous listing; the rule rejects that level even with Blob read logs enabled.
+  - 'CKV_AZURE_139:aks\.tf$'  # Lab budget selects Basic ACR; the public registry endpoint serves the protected publisher and AKS.
+  - 'CKV_AZURE_163:aks\.tf$'  # Lab budget selects Basic ACR; Pipeline 2 scans images before publication.
+  - 'CKV_AZURE_164:aks\.tf$'  # Lab budget selects Basic ACR without registry content trust; Pipeline 2 pins deployment digests.
+  - 'CKV_AZURE_165:aks\.tf$'  # Lab budget selects one regional Basic ACR; geo-replication requires Premium.
+  - 'CKV_AZURE_166:aks\.tf$'  # Lab budget selects Basic ACR without registry quarantine; the release gate scans before push.
+  - 'CKV_AZURE_167:aks\.tf$'  # Lab budget selects Basic ACR without Premium untagged-manifest retention.
+  - 'CKV_AZURE_233:aks\.tf$'  # Lab budget selects Basic ACR; East US 2 has automatic zone redundancy and AzureRM reserves the explicit flag for Premium.
+  - 'CKV_AZURE_237:aks\.tf$'  # Lab budget selects Basic ACR; dedicated registry data endpoints require Premium.
+  - 'CKV_AZURE_50:mongo\.tf$'  # Azure VM Run Command requires extensions for the exercise's non-SSH administration path.

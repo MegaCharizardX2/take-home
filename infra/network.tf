@@ -105,16 +105,18 @@ resource "azurerm_private_dns_zone" "mongo" {
 }
 
 resource "azurerm_private_dns_zone_virtual_network_link" "mongo" {
-  name                 = "outpost"
-  private_dns_zone_id  = azurerm_private_dns_zone.mongo.id
-  virtual_network_id   = azurerm_virtual_network.lab.id
-  registration_enabled = false
-  tags                 = local.tags
+  name                  = "outpost"
+  resource_group_name   = local.rg.name
+  private_dns_zone_name = azurerm_private_dns_zone.mongo.name
+  virtual_network_id    = azurerm_virtual_network.lab.id
+  registration_enabled  = false
+  tags                  = local.tags
 }
 
 resource "azurerm_private_dns_a_record" "mongo" {
   name                = "mongo"
-  private_dns_zone_id = azurerm_private_dns_zone.mongo.id
+  resource_group_name = local.rg.name
+  zone_name           = azurerm_private_dns_zone.mongo.name
   ttl                 = 60
   records             = [azurerm_network_interface.mongo.private_ip_address]
   tags                = local.tags

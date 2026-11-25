@@ -1,3 +1,4 @@
+#trivy:ignore:AZU-0012:exp:2026-12-08
 resource "azurerm_storage_account" "backup" {
   name                              = "stoutpost${random_id.instance.hex}"
   resource_group_name               = local.rg.name
@@ -7,7 +8,7 @@ resource "azurerm_storage_account" "backup" {
   account_replication_type          = "GRS"
   https_traffic_only_enabled        = true
   min_tls_version                   = "TLS1_2"
-  public_network_access             = "Enabled"
+  public_network_access_enabled     = true
   allow_nested_items_to_be_public   = var.backup_stage == "public"
   default_to_oauth_authentication   = true
   shared_access_key_enabled         = false
@@ -19,6 +20,15 @@ resource "azurerm_storage_account" "backup" {
     delete_retention_policy { days = 7 }
     container_delete_retention_policy { days = 7 }
   }
+  queue_properties {
+    logging {
+      version               = "1.0"
+      read                  = true
+      write                 = true
+      delete                = true
+      retention_policy_days = 7
+    }
+  }
   tags = local.tags
   lifecycle {
     prevent_destroy = true
@@ -29,6 +39,7 @@ resource "azurerm_storage_account" "backup" {
   }
 }
 
+#trivy:ignore:AZU-0007:exp:2026-12-08
 resource "azurerm_storage_container" "backups" {
   name                  = "backups"
   storage_account_id    = azurerm_storage_account.backup.id

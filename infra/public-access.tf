@@ -1,3 +1,4 @@
+#trivy:ignore:AZU-0047:exp:2026-12-08
 resource "azurerm_network_security_rule" "ingress" {
   name                        = "Internet-to-ingress"
   resource_group_name         = local.rg.name
@@ -12,6 +13,8 @@ resource "azurerm_network_security_rule" "ingress" {
   destination_port_ranges     = ["80", "443"]
 }
 
+#trivy:ignore:AZU-0047:exp:2026-12-08
+#trivy:ignore:AZU-0050:exp:2026-12-08
 resource "azurerm_network_security_rule" "ssh" {
   name                        = "Internet-to-mongo-ssh"
   resource_group_name         = local.rg.name

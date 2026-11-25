@@ -22,6 +22,12 @@ resource "azurerm_network_interface" "mongo" {
   tags = local.tags
 }
 
+# Keep the same database boundary on the NIC if its subnet attachment changes.
+resource "azurerm_network_interface_security_group_association" "mongo" {
+  network_interface_id      = azurerm_network_interface.mongo.id
+  network_security_group_id = azurerm_network_security_group.lab["mongo"].id
+}
+
 resource "azurerm_linux_virtual_machine" "mongo" {
   name                            = "vm-mongo"
   resource_group_name             = local.rg.name
@@ -44,10 +50,11 @@ resource "azurerm_linux_virtual_machine" "mongo" {
     identity_ids = [local.identities["id-mongo"].id]
   }
   os_disk {
-    name                 = "disk-mongo-os"
-    caching              = "ReadWrite"
-    storage_account_type = "StandardSSD_LRS"
-    disk_size_gb         = 32
+    name                   = "disk-mongo-os"
+    caching                = "ReadWrite"
+    storage_account_type   = "StandardSSD_LRS"
+    disk_size_gb           = 32
+    disk_encryption_set_id = azurerm_disk_encryption_set.mongo.id
   }
   source_image_reference {
     publisher = "Canonical"
@@ -59,10 +66,22 @@ resource "azurerm_linux_virtual_machine" "mongo" {
   tags = local.tags
   lifecycle { ignore_changes = [tags["lab-keep-running"]] }
   depends_on = [
+    azurerm_role_assignment.mongo_disk_key,
+    azurerm_network_interface_security_group_association.mongo,
     azurerm_subnet_network_security_group_association.lab,
     azurerm_network_security_rule.mongo,
     azurerm_subnet_nat_gateway_association.lab, azurerm_nat_gateway_public_ip_association.lab
   ]
+}
+
+resource "azurerm_disk_encryption_set" "mongo" {
+  name                      = "des-mongo"
+  location                  = local.location
+  resource_group_name       = local.rg.name
+  key_vault_key_id          = azurerm_key_vault_key.mongo_disk.versionless_id
+  auto_key_rotation_enabled = true
+  identity { type = "SystemAssigned" }
+  tags = local.tags
 }
 
 resource "azurerm_managed_disk" "data" {
@@ -75,6 +94,8 @@ resource "azurerm_managed_disk" "data" {
   disk_size_gb                  = 32
   network_access_policy         = "DenyAll"
   public_network_access_enabled = false
+  disk_encryption_set_id        = azurerm_disk_encryption_set.mongo.id
+  depends_on                    = [azurerm_role_assignment.mongo_disk_key]
   tags                          = local.tags
 }
 

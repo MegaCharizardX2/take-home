@@ -1,0 +1,11 @@
+name: Temporary Key Vault access
+description: Admit the protected runner to the lab vault and close access at job exit.
+inputs:
+  vault:
+    description: Vault name from the Terraform bootstrap output.
+    required: true
+runs:
+  using: node24
+  main: open.cjs
+  post: close.cjs
+  post-if: always()

@@ -22,3 +22,13 @@ output "workspace_name" {
   description = "Workspace for the Owner's subscription Activity Log export."
   value       = azurerm_log_analytics_workspace.lab.name
 }
+
+output "vault_name" {
+  description = "Key Vault for the protected job's temporary firewall rule."
+  value       = azurerm_key_vault.lab.name
+}
+
+output "disk_encryption_principal_id" {
+  description = "System-assigned DES principal for the Owner's role-delegation condition."
+  value       = azurerm_disk_encryption_set.mongo.identity[0].principal_id
+}
