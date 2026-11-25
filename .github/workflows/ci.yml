@@ -1,0 +1,81 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TRIVY: aquasec/trivy@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan commit history
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
+            zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f git --redact --log-opts=HEAD /src
+
+  terraform-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e
+        if: hashFiles('infra/**/*.tf*') != ''
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337
+        if: hashFiles('infra/**/*.tf*') != ''
+      - name: Validate Terraform modules
+        run: |
+          [[ -d infra ]] || { echo "No infra directory yet"; exit 0; }
+          terraform fmt -check -recursive infra
+          while IFS= read -r -d '' module; do
+            terraform -chdir="$module" init -backend=false -input=false
+            terraform -chdir="$module" validate
+            tflint --chdir="$module" --init
+            tflint --chdir="$module"
+          done < <(find infra -type f \( -name '*.tf' -o -name '*.tf.json' \) -printf '%h\0' | sort -zu)
+
+  iac-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Scan Terraform and Kubernetes files
+        run: |
+          for dir in infra k8s; do
+            [[ -d "$dir" ]] || { echo "No $dir directory yet"; continue; }
+            docker run --rm -v "$PWD:/src:ro" -w /src bridgecrew/checkov@sha256:89a4c477508225cdc3ed8a23d15c7e0d9d3029bc8ae192b7f113a6ff5f210c94 -d "$dir" --framework terraform kubernetes
+            docker run --rm -v "$PWD:/src:ro" -w /src "$TRIVY" config --exit-code 1 --severity UNKNOWN,HIGH,CRITICAL "$dir"
+          done
+
+  image-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build and scan Tasky
+        run: |
+          [[ -d tasky ]] || { echo "No tasky directory yet"; exit 0; }
+          docker build -t tasky:ci tasky
+          docker save -o "$RUNNER_TEMP/tasky.tar" tasky:ci
+          docker run --rm -v "$RUNNER_TEMP/tasky.tar:/tasky.tar:ro" -v "$PWD:/src:ro" -w /src "$TRIVY" image --input /tasky.tar --exit-code 1 --severity UNKNOWN,HIGH,CRITICAL
+
+  review-rehearsal:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: infra
+    permissions: {}
+    steps:
+      - run: echo "Environment review completed"
