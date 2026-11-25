@@ -40,6 +40,15 @@ func TestRouteBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := router(client.Database("test"), sessions)
+	t.Run("noncanonical path stays local", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/healthz/", nil)
+		req.Header.Set("X-Forwarded-Prefix", "/test-prefix")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound || w.Header().Get("Location") != "" {
+			t.Fatalf("expected 404 without redirect, got %d", w.Code)
+		}
+	})
 	owner, other := bson.NewObjectID().Hex(), bson.NewObjectID().Hex()
 	w := httptest.NewRecorder()
 	if err := sessions.Set(w, owner, `A & "B" <C>`); err != nil {

@@ -49,7 +49,7 @@ func (h *Handlers) SignUp(c *gin.Context) {
 		return
 	}
 	input.Name, input.Email = strings.TrimSpace(input.Name), strings.TrimSpace(input.Email)
-	if input.Name == "" || len(input.Name) > 128 || input.Email == "" || len(input.Email) > 320 || input.Password == "" || len(input.Password) > 72 {
+	if input.Name == "" || len(input.Name) > auth.MaxDisplayNameBytes || input.Email == "" || len(input.Email) > 320 || input.Password == "" || len(input.Password) > 72 {
 		failure(c, http.StatusBadRequest, "Username, email and a password of up to 72 bytes are required")
 		return
 	}

@@ -12,7 +12,9 @@ document.querySelector("#username").textContent = page.dataset.displayName || "M
 let todos = [];
 let filter = "all";
 let editing = null;
-let busy = false;
+// Complete the initial list before enabling mutations that reload it.
+let busy = true;
+page.inert = true;
 
 function button(text, click) {
   const element = document.createElement("button");
@@ -117,4 +119,9 @@ document.querySelector(".task-input").addEventListener("submit", event => {
   else mutate("/todo/" + owner, "POST", {name, status: "pending"});
 });
 
-refresh().catch(() => { error.textContent = "Could not load your tasks."; });
+refresh()
+  .catch(() => { error.textContent = "Could not load your tasks."; })
+  .finally(() => {
+    busy = false;
+    page.inert = false;
+  });

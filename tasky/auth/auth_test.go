@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,5 +55,36 @@ func TestSessionValidation(t *testing.T) {
 				t.Errorf("got %d, want %d", status, tc.want)
 			}
 		})
+	}
+}
+
+func TestLegacyDisplayNameSize(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := New(hex.EncodeToString(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := bson.NewObjectID().Hex()
+	for _, size := range []int{MaxDisplayNameBytes, MaxDisplayNameBytes + 1, 8192} {
+		name := strings.Repeat("x", size)
+		w := httptest.NewRecorder()
+		if err := sessions.Set(w, id, name); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.AddCookie(w.Result().Cookies()[0])
+		claims, status := sessions.verify(req)
+		if status != http.StatusOK || claims.UserID != id {
+			t.Fatalf("account with a %d-byte name lost its session", size)
+		}
+		if size > MaxDisplayNameBytes {
+			name = ""
+		}
+		if claims.DisplayName != name {
+			t.Fatalf("unexpected display-name claim for %d-byte input", size)
+		}
 	}
 }

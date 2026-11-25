@@ -22,6 +22,7 @@ import (
 func router(db *mongo.Database, sessions *auth.Sessions) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	r.RedirectTrailingSlash = false
 	_ = r.SetTrustedProxies(nil)
 	r.Use(gin.CustomRecoveryWithWriter(io.Discard, func(c *gin.Context, _ any) { c.AbortWithStatus(http.StatusInternalServerError) }))
 	r.Use(func(c *gin.Context) {

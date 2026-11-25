@@ -12,6 +12,9 @@ import (
 
 const sessionDuration = 5 * time.Minute
 
+// MaxDisplayNameBytes bounds the optional cookie claim, including for legacy accounts.
+const MaxDisplayNameBytes = 128
+
 type Claims struct {
 	// The original Tasky cookie uses "username" for the user's hexadecimal ID.
 	UserID      string `json:"username"`
@@ -29,6 +32,9 @@ func New(key string) (*Sessions, error) {
 }
 
 func (s *Sessions) Set(w http.ResponseWriter, id, displayName string) error {
+	if len(displayName) > MaxDisplayNameBytes {
+		displayName = ""
+	}
 	expiry := time.Now().Add(sessionDuration)
 	claims := Claims{
 		UserID: id, DisplayName: displayName,
