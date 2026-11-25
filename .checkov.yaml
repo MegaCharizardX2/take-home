@@ -1,0 +1,12 @@
+# Remove these baseline waivers during the reviewed Outpost transition, by 2026-12-08.
+skip-check:
+  - 'CKV_AZURE_10:public-access\.tf$'  # PDF requires public SSH to the database VM.
+  - 'CKV_AZURE_119:mongo\.tf$'  # PDF requires public SSH to the database VM through its public IP.
+  - 'CKV_AZURE_160:public-access\.tf$'  # PDF requires public web ingress; the lab frontend accepts HTTP on port 80.
+  - 'CKV_AZURE_59:storage\.tf$'  # PDF requires anonymous read and listing of synthetic database backups.
+  - 'CKV_AZURE_34:storage\.tf$'  # PDF requires the backup container to allow anonymous list and get in the public phase.
+  - 'CKV2_AZURE_8:storage\.tf$'  # PDF requires this synthetic-backup container to be public; Activity Logs go to Log Analytics.
+  - 'CKV2_AZURE_47:storage\.tf$'  # PDF requires account-level opt-in for public read and listing of backups.
+  - 'CKV2_AZURE_33:storage\.tf$'  # PDF introduces the private backup path during Outpost after the public baseline.
+  - 'CKV2_AZURE_1:storage\.tf$'  # PDF introduces the backup customer-managed key during Outpost remediation.
+  - 'CKV2_AZURE_21:storage\.tf$'  # PDF requires container-level anonymous listing; the rule rejects that level even with Blob read logs enabled.

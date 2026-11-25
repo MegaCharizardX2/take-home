@@ -1,0 +1,8 @@
+# PDF requires public web ingress and public database SSH (the two rules in infra/public-access.tf).
+AZU-0047 exp:2026-12-08
+# PDF requires public SSH to the database VM in infra/public-access.tf.
+AZU-0050 exp:2026-12-08
+# PDF requires anonymous Internet listing and download from the backup account in infra/storage.tf.
+AZU-0012 exp:2026-12-08
+# PDF requires container-level anonymous read and list on the backups in infra/storage.tf.
+AZU-0007 exp:2026-12-08
