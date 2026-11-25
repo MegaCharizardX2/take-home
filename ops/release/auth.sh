@@ -17,4 +17,8 @@ else
     denial=0
     evidence=$(kubectl auth can-i create configmaps -n wiz-evidence) || denial=$?
     [[ $denial == 1 && $evidence == no ]] || exit 1
+    if message=$(kubectl -n wiz-evidence create configmap outpost-release-boundary-check \
+        --from-literal=marker=synthetic --dry-run=server -o name 2>&1); then exit 1; fi
+    [[ $message == *'(Forbidden)'* && $message == *'cannot create resource "configmaps"'* \
+       && $message == *'in the namespace "wiz-evidence"'* ]] || exit 1
 fi

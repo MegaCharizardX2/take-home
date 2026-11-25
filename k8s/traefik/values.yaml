@@ -1,0 +1,96 @@
+image:
+  registry: docker.io
+  repository: library/traefik
+  digest: sha256:00c9734983e74ae35a1fc18eaee9e9da13f3dde95c4e45b3b8c3b60e0dbd2d17
+  pullPolicy: Always
+versionOverride: v3.8.0
+deployment:
+  replicas: 1
+  annotations:
+    checkov.io/skip1: "CKV_K8S_38=The required Traefik Ingress controller authenticates to the Kubernetes API using its scoped service account."
+updateStrategy:
+  type: Recreate
+  rollingUpdate: null
+nodeSelector: {kubernetes.azure.com/mode: system}
+api: {dashboard: false, insecure: false, debug: false}
+ingressClass: {enabled: true, name: traefik, isDefaultClass: false}
+core: {strictTLSOptions: true}
+providers:
+  kubernetesCRD: {enabled: false}
+  kubernetesGateway: {enabled: false}
+  kubernetesIngress:
+    enabled: true
+    ingressClass: traefik
+    namespaces: [wiz-web]
+    allowExternalNameServices: false
+    publishedService: {enabled: false}
+    ingressEndpoint: {hostname: tasky.invalid}
+gateway: {enabled: false}
+ports:
+  web:
+    http:
+      redirections:
+        entryPoint: {to: websecure, scheme: https, permanent: true}
+  websecure:
+    http:
+      tls: {enabled: true}
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      caServer: https://acme-v02.api.letsencrypt.org/directory
+      storage: /data/acme.json
+      httpChallenge: {entryPoint: web}
+persistence:
+  enabled: true
+  storageClass: managed-csi
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  path: /data
+service:
+  annotations:
+    service.beta.kubernetes.io/azure-pip-name: pip-ingress
+    service.beta.kubernetes.io/azure-load-balancer-resource-group: takehome-rg
+  spec: {type: LoadBalancer, externalTrafficPolicy: Local}
+resources:
+  requests: {cpu: 100m, memory: 64Mi, ephemeral-storage: 8Mi}
+  limits: {cpu: 500m, memory: 256Mi, ephemeral-storage: 64Mi}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile: {type: RuntimeDefault}
+securityContext:
+  privileged: false
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+# The Ingress provider watches Secrets, Services and EndpointSlices only in wiz-web.
+# Its cluster-wide informers need read access to Nodes and IngressClasses only.
+rbac: {enabled: false}
+extraObjects:
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata: {name: outpost-traefik-discovery}
+    rules:
+      - {apiGroups: [""], resources: [nodes], verbs: [get, list, watch]}
+      - {apiGroups: [networking.k8s.io], resources: [ingressclasses], verbs: [get, list, watch]}
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata: {name: outpost-traefik-discovery}
+    roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: outpost-traefik-discovery}
+    subjects: [{kind: ServiceAccount, name: traefik, namespace: traefik}]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata: {name: outpost-traefik-ingress, namespace: wiz-web}
+    rules:
+      - {apiGroups: [""], resources: [services], verbs: [get, list, watch]}
+      - {apiGroups: [discovery.k8s.io], resources: [endpointslices], verbs: [get, list, watch]}
+      - {apiGroups: [networking.k8s.io], resources: [ingresses], verbs: [get, list, watch]}
+      - {apiGroups: [networking.k8s.io], resources: [ingresses/status], resourceNames: [web], verbs: [update]}
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata: {name: outpost-traefik-ingress, namespace: wiz-web}
+    roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: outpost-traefik-ingress}
+    subjects: [{kind: ServiceAccount, name: traefik, namespace: traefik}]

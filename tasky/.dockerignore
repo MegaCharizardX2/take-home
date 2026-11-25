@@ -1,0 +1,17 @@
+*
+!go.mod
+!go.sum
+!main.go
+!auth/
+!auth/**
+!controllers/
+!controllers/**
+!database/
+!database/**
+!models/
+!models/**
+!assets/
+!assets/**
+!cmd/
+!cmd/**
+!wizexercise.txt

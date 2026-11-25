@@ -1,6 +1,7 @@
 name: Pipeline 1 cluster setup
 on:
   workflow_dispatch:
+    # checkov:skip=CKV_GHA_7:The infra workflow requires fixed setup and post-release reader entry points with separate ownership.
     inputs:
       mode:
         description: Install the platform or roll out the reader after the web release
@@ -32,7 +33,7 @@ jobs:
         run: bash infra/pipeline/azure-login.sh
       - name: Verify power state, identity and Kubernetes permissions
         run: python3 ops/release/cluster.py gate
-      - name: Apply platform resources and install Traefik
+      - name: Apply the reviewed platform resources
         if: inputs.mode == 'setup'
         run: python3 ops/release/cluster.py setup
       - name: Install Tasky credentials
@@ -41,6 +42,9 @@ jobs:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
         run: python3 ops/release/cluster.py secret
+      - name: Verify and install the pinned Traefik chart
+        if: inputs.mode == 'setup'
+        run: python3 ops/release/cluster.py traefik
       - name: Roll out reader with the deployed web image
         if: inputs.mode == 'reader'
         run: python3 ops/release/cluster.py reader

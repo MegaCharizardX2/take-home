@@ -19,7 +19,8 @@ REG = 'acroutpost123456789a.azurecr.io'
 APP = 'sha256:' + 'a' * 64
 INIT = 'sha256:' + 'b' * 64
 ENV = dict(ACR_LOGIN_SERVER=REG, INGRESS_FQDN='outpost-123456789a.testhash.eastus2.cloudapp.azure.com',
-           REVISION=SHA, GITHUB_SHA=SHA, TASKY_DIGEST=APP, BUSYBOX_DIGEST=INIT, TRIVY='scanner', ARM_SUBSCRIPTION_ID=SUB)
+           REVISION=SHA, GITHUB_SHA=SHA, TASKY_DIGEST=APP, BUSYBOX_DIGEST=INIT,
+           TASKY_CONFIG_DIGEST='sha256:'+'c'*64, BUSYBOX_CONFIG_DIGEST='sha256:'+'d'*64, ARM_SUBSCRIPTION_ID=SUB)
 
 
 class Release(unittest.TestCase):
@@ -68,21 +69,28 @@ class Release(unittest.TestCase):
             self.assertFalse((self.path / 'secret.json').exists())
 
     def test_render_release_binds_both_digests_and_revision(self):
-        with patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as scanners:
+        with patch.object(cluster, 'scan') as scanners:
             cluster.render(self.path)
         rendered = (self.path / 'deploy.yaml').read_text()
         self.assertIn(f'{REG}/tasky@{APP}', rendered)
         self.assertIn(f'{REG}/busybox@{INIT}', rendered)
         self.assertIn(SHA, rendered)
         self.assertIn(ENV['INGRESS_FQDN'], rendered)
-        self.assertNotIn('registry.invalid', rendered)
-        self.assertEqual(scanners.call_count, 2)
+        self.assertNotIn('acroutpost0000000000.azurecr.io/', rendered)
+        scanners.assert_called_once()
+        self.assertTrue((self.path / 'scanned.sha256').is_file())
+        with patch.object(cluster, 'fixed') as remote:
+            cluster.deploy(self.path)
+            self.assertIn('deploy.yaml', remote.call_args.args[2])
+        (self.path / 'deploy.yaml').write_text(rendered + '# drift')
+        with self.assertRaises(cluster.Failure):
+            cluster.deploy(self.path)
         for var, bad in [('ACR_LOGIN_SERVER', REG + '.invalid'), ('INGRESS_FQDN', 'other.invalid'),
                          ('INGRESS_FQDN', 'outpost-0000000000.eastus2.cloudapp.azure.com'), ('TASKY_DIGEST', 'latest'),
                          ('BUSYBOX_DIGEST', '\nmalformed'), ('REVISION', '2' * 40)]:
             with patch.dict(os.environ, {var: bad}), self.assertRaises(cluster.Failure):
                 cluster.render(self.path)
-        with patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 1)), self.assertRaises(cluster.Failure):
+        with patch.object(cluster, 'scan', side_effect=cluster.Failure('scan failed')), self.assertRaises(cluster.Failure):
             cluster.render(self.path)
 
     def test_marker_proof_stays_private(self):
@@ -111,6 +119,7 @@ class Release(unittest.TestCase):
         kubectl.write_text("""#!/bin/sh
 case "$*" in
   *whoami*) echo "$MOCK_PRINCIPAL" ;;
+  *'create configmap outpost-release-boundary-check'*) echo 'Error from server (Forbidden): User cannot create resource "configmaps" in the namespace "wiz-evidence"' >&2; exit 1 ;;
   *wiz-evidence*) echo "$MOCK_DENIAL"; exit "$MOCK_STATUS" ;;
   *can-i*) echo yes ;;
   *) exit 1 ;;
@@ -139,14 +148,15 @@ elif 'deploy' in a: print(uid,3,2 if bad=='stale generation' else 3,2,2,2,2,2,4,
 elif 'rs' in a: print(rs,uid,3 if bad=='stale rs' else 4)
 elif 'pods' in a:
     for name in ('web-abc-123','web-abc-456'):
-        print('|'.join([name,'',rs,'True',node if bad!='wrong placement' else 'other','web',web,init if bad!='wrong init' else '-', 'workload:Equal:web:NoSchedule,']))
+        print('|'.join([name,'',rs,'True',node if bad!='wrong placement' else 'other','web',web,init if bad!='wrong init' else '-', 'workload:Equal:web:NoSchedule,',
+                        'true','2026-11-26T00:00:00Z',web if bad!='runtime' else 'wrong','0',init]))
 elif 'exec' in a: print('different' if bad=='marker' else 'synthetic')
 else: sys.exit(1)
 ''')
         kubectl.chmod(0o700)
-        (self.path / 'images.txt').write_text(f'{REG}/tasky@{APP} {REG}/busybox@{INIT} {SHA}\n')
+        (self.path / 'images.txt').write_text(f'{REG}/tasky@{APP} {REG}/busybox@{INIT} {SHA} {ENV["TASKY_CONFIG_DIGEST"]} {ENV["BUSYBOX_CONFIG_DIGEST"]}\n')
         (self.path / 'expected').write_text(hashlib.sha256(b'synthetic\n').hexdigest() + '\n')
-        for bad in ('', 'duplicate node', 'taint', 'stale generation', 'stale rs', 'wrong placement', 'wrong init', 'marker'):
+        for bad in ('', 'duplicate node', 'taint', 'stale generation', 'stale rs', 'wrong placement', 'wrong init', 'runtime', 'marker'):
             with self.subTest(bad=bad):
                 reply = subprocess.run(['bash', cluster.SCRIPTS / 'verify.sh'], cwd=self.path, capture_output=True,
                                        env=dict(os.environ, PATH=f"{self.path}:{os.environ['PATH']}", BAD=bad), check=False)

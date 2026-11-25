@@ -1,13 +1,16 @@
 """Protected workflow steps. Only allowlisted evidence leaves the runner's private directory."""
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
+from arm_transport import completed_reply, PollError
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / 'ops/release'
@@ -15,10 +18,11 @@ UUID = r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
 DIGEST = r'sha256:[a-f0-9]{64}'
 REGISTRY = r'acroutpost[0-9a-f]{10}\.azurecr\.io'
 FQDN = r'outpost-[0-9a-f]{10}(?:\.[a-z0-9-]{1,63})?\.eastus2\.cloudapp\.azure\.com'
-ACR_PLACEHOLDER = 'registry.invalid/{}@sha256:' + '0' * 64
+ACR_PLACEHOLDER = 'acroutpost0000000000.azurecr.io/{}@sha256:' + '0' * 64
 TRAEFIK_SHA = '29cbf019c5e013d9455c89fa29be66d2dd9007c84ed51b969220225fd1b7983c'
 TRAEFIK_URL = 'https://traefik.github.io/charts/traefik/traefik-43.0.0.tgz'
 CHECKOV = 'bridgecrew/checkov@sha256:89a4c477508225cdc3ed8a23d15c7e0d9d3029bc8ae192b7f113a6ff5f210c94'
+TRIVY = 'aquasec/trivy@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb'
 
 
 class Failure(Exception):
@@ -54,8 +58,10 @@ def arm(*args):
 
 
 def write(path, value):
-    path.write_text(value, encoding='utf-8')
-    path.chmod(0o600)
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as out:
+        os.fchmod(out.fileno(), 0o600)
+        out.write(value)
 
 
 def copy(path, target):
@@ -85,12 +91,22 @@ def result(reply, *, principal_gate=False):
 
 
 def invoke(work, command, files, *, timeout=390, principal_gate=False):
+    deadline = time.monotonic() + timeout
     args = ['az', 'aks', 'command', 'invoke', '-g', 'takehome-rg', '-n', 'aks-outpost',
             '--subscription', env('ARM_SUBSCRIPTION_ID', UUID), '--only-show-errors', '-o', 'json']
     for name in files:
         require(Path(name).name == name and (work / name).is_file(), 'Missing AKS attachment')
         args += ['--file', name]
-    return result(run(args + ['--command', command], timeout=timeout, cwd=work), principal_gate=principal_gate)
+    first = run(args + ['--command', command], timeout=timeout, cwd=work)
+    def fetch(command_id, remaining):
+        return run(['az', 'aks', 'command', 'result', '-g', 'takehome-rg', '-n', 'aks-outpost',
+                    '--subscription', env('ARM_SUBSCRIPTION_ID', UUID), '--command-id', command_id,
+                    '--only-show-errors', '-o', 'json'], timeout=remaining)
+    try:
+        reply = completed_reply(first, fetch, deadline)
+    except PollError as error:
+        raise Failure(str(error)) from None
+    return result(reply, principal_gate=principal_gate)
 
 
 def fixed(work, command, files, proof, **kwargs):
@@ -102,11 +118,12 @@ def fixed(work, command, files, proof, **kwargs):
 def gate(work, mode):
     deadline = time.monotonic() + 900
     client = env('ARM_CLIENT_ID', UUID)
+    aks = arm('aks', 'show', '-g', 'takehome-rg', '-n', 'aks-outpost', '--query', '[provisioningState,powerState.code]')
+    require(aks.split() == ['Succeeded', 'Running'], 'AKS unavailable')
     if mode == 'infra':
         group = ['-g', 'takehome-rg']
-        aks = arm('aks', 'show', *group, '-n', 'aks-outpost', '--query', '[provisioningState,powerState.code]')
         vm = arm('vm', 'get-instance-view', *group, '-n', 'vm-mongo', '--query', "instanceView.statuses[?code=='PowerState/running'].code | [0]")
-        require(aks.split() == ['Succeeded', 'Running'] and vm == 'PowerState/running', 'Database VM or AKS unavailable')
+        require(vm == 'PowerState/running', 'Database VM unavailable')
         principal = checked(arm('identity', 'show', *group, '-n', 'takehome-id', '--query', 'principalId'), UUID, 'infra principal')
     else:
         principal = env('RELEASE_PRINCIPAL_ID', UUID)
@@ -138,27 +155,64 @@ def substitute(text, placeholder, replacement):
     return text.replace(placeholder, replacement)
 
 
+def scan(work, files, registries):
+    """Scan only public manifests; Kubernetes Secret attachments never enter this directory."""
+    with tempfile.TemporaryDirectory(dir=work) as directory:
+        root = Path(directory)
+        inputs, policy = root / 'manifests', root / 'policy'
+        inputs.mkdir(); policy.mkdir()
+        for name, source in files.items():
+            dest = inputs / name
+            dest.parent.mkdir(exist_ok=True, parents=True)
+            copy(source, dest)
+        data = policy / 'data'
+        data.mkdir()
+        write(data / 'trusted.json', json.dumps({'ksv0125': {'trusted_registries': registries}}))
+        copy(ROOT / '.trivyignore.yaml', policy / 'exceptions.yaml')
+        base = ['docker', 'run', '--rm', '--user', f'{os.getuid()}:{os.getgid()}', '-e', 'HOME=/tmp',
+                '-v', f'{inputs}:/scan:ro', '-w', '/scan']
+        from_checkov = json.loads(run(base + ['--network', 'none', CHECKOV, '-d', '/scan', '--framework', 'kubernetes',
+                                             '--skip-download', '-o', 'json'], timeout=180))
+        summary = from_checkov['summary']
+        require(summary['passed'] > 0 and not summary['failed'] and not summary['parsing_errors'], 'Incomplete Checkov scan')
+        run(base + ['-v', f'{policy}:/policy:ro', TRIVY, 'config', '--cache-dir', '/tmp/trivy',
+                    '--config-data', '/policy/data', '--ignorefile', '/policy/exceptions.yaml', '--format', 'json',
+                    '--exit-code', '1', '/scan'], timeout=180)
+
+
 def setup(work):
-    fqdn, suffix = ingress()
-    account = checked('stoutpost' + suffix, r'stoutpost[0-9a-f]{10}', 'backup account')
-    require(arm('storage', 'account', 'show', '-g', 'takehome-rg', '-n', account, '--query', 'name') == account, 'Backup account mismatch')
     reader_id = checked(arm('identity', 'show', '-g', 'takehome-rg', '-n', 'id-backup-reader', '--query', 'clientId'), UUID, 'reader client ID')
-    for name in ('namespaces', 'identities', 'marker', 'network'):
+    names = ('namespaces', 'identities', 'marker', 'network', 'bindings', 'baseline-binding', 'traefik-secret-watch')
+    for name in names:
         source = (ROOT / f'k8s/platform/{name}.yaml').read_text()
         if name == 'identities':
             source = substitute(source, '00000000-0000-0000-0000-000000000000', reader_id)
         write(work / f'{name}.yaml', source)
+    scan(work, {f'platform/{name}.yaml': work / f'{name}.yaml' for name in names}, [])
     copy(SCRIPTS / 'platform.sh', work / 'platform.sh')
-    fixed(work, 'bash platform.sh 2>/dev/null', ['platform.sh', 'namespaces.yaml', 'identities.yaml', 'marker.yaml', 'network.yaml'], 'platform ready')
-    lock = json.loads((ROOT / 'ops/traefik/chart.lock').read_text())
+    fixed(work, 'bash platform.sh 2>/dev/null', ['platform.sh'] + [f'{name}.yaml' for name in names], 'platform ready')
+
+
+def traefik(work):
+    fqdn, _ = ingress()
+    lock = json.loads((ROOT / 'k8s/traefik/chart.lock').read_text())
     require(lock.get('version') in ('43.0.0', 'v43.0.0') and lock.get('sha256') == TRAEFIK_SHA and lock.get('url') == TRAEFIK_URL, 'Unexpected Traefik chart lock')
     chart = run(['curl', '--proto', '=https', '--proto-redir', '=https', '--location', '--fail', '--silent', '--max-time', '60', TRAEFIK_URL])
     require(hashlib.sha256(chart).hexdigest() == TRAEFIK_SHA, 'Traefik chart verification failed')
     (work / 'traefik.tgz').write_bytes(chart)
-    values = (ROOT / 'ops/traefik/values.yaml').read_text()
+    values = (ROOT / 'k8s/traefik/values.yaml').read_text()
     write(work / 'values.yaml', substitute(values, 'tasky.invalid', fqdn))
+    manifest = run(['helm', 'template', 'traefik', './traefik.tgz', '--namespace', 'traefik', '--kube-version',
+                    '1.36.5', '--skip-crds', '--values', 'values.yaml'], cwd=work).decode()
+    trusted_image = 'docker.io/library/traefik@sha256:00c9734983e74ae35a1fc18eaee9e9da13f3dde95c4e45b3b8c3b60e0dbd2d17'
+    require(re.findall(r'^\s*image:\s*(\S+)\s*$', manifest, re.MULTILINE) == [trusted_image], 'Unexpected controller image')
+    write(work / 'controller.yaml', manifest)
+    scan(work, {'controller.yaml': work / 'controller.yaml', 'platform/network.yaml': ROOT / 'k8s/platform/network.yaml'}, ['docker.io'])
+    address = ipaddress.IPv4Address(arm('network', 'public-ip', 'show', '-g', 'takehome-rg', '-n', 'pip-ingress', '--query', 'ipAddress'))
+    require(address.is_global and not address.is_multicast, 'Unexpected ingress frontend IP')
+    write(work / 'frontend-ip', str(address) + '\n')
     copy(SCRIPTS / 'traefik.sh', work / 'traefik.sh')
-    fixed(work, 'bash traefik.sh 2>/dev/null', ['traefik.sh', 'values.yaml', 'traefik.tgz'], 'traefik ready', timeout=570)
+    fixed(work, 'bash traefik.sh 2>/dev/null', ['traefik.sh', 'values.yaml', 'traefik.tgz', 'frontend-ip'], 'traefik ready', timeout=570)
 
 
 def secret(work):
@@ -172,7 +226,7 @@ def secret(work):
     try:
         write(file, json.dumps(manifest))
         # A Go template checks both keys inside kubectl without emitting their values.
-        command = ("kubectl -n wiz-web apply --server-side --field-manager=outpost-infra -f secret.json >/dev/null 2>&1 && "
+        command = ("trap 'rm -f -- secret.json' EXIT; kubectl -n wiz-web apply --server-side --field-manager=outpost-infra -f secret.json >/dev/null 2>&1 && "
                    "kubectl -n wiz-web get secret tasky-config -o go-template='{{if and (index .data \"MONGODB_URI\") (index .data \"SECRET_KEY\")}}secret ready{{end}}' 2>/dev/null")
         fixed(work, command, [file.name], 'secret ready')
     finally:
@@ -189,7 +243,10 @@ def reader(work):
     record(f'Current web image verified · AKS request `{request}`')
     template = (ROOT / 'k8s/reader/deployment.yaml').read_text()
     template = substitute(template, ACR_PLACEHOLDER.format('tasky'), image)
-    write(work / 'reader.yaml', substitute(template, 'stoutpost0000000000', 'stoutpost' + suffix))
+    account = 'stoutpost' + suffix
+    require(arm('storage', 'account', 'show', '-g', 'takehome-rg', '-n', account, '--query', 'name') == account, 'Backup account mismatch')
+    write(work / 'reader.yaml', substitute(template, 'stoutpost0000000000', account))
+    scan(work, {'reader/deployment.yaml': work / 'reader.yaml', 'platform/network.yaml': ROOT / 'k8s/platform/network.yaml'}, [registry])
     fixed(work, 'bash reader.sh apply 2>/dev/null', ['reader.sh', 'reader.yaml'], 'reader ready')
 
 
@@ -197,7 +254,9 @@ def release():
     registry = env('ACR_LOGIN_SERVER', REGISTRY)
     sha = env('REVISION', r'[0-9a-f]{40}')
     require(sha == os.environ.get('GITHUB_SHA'), 'Published revision differs from workflow checkout')
-    return sha, {repo: f'{registry}/{repo}@' + env(f'{repo.upper()}_DIGEST', DIGEST) for repo in ('tasky', 'busybox')}
+    images = {repo: f'{registry}/{repo}@' + env(f'{repo.upper()}_DIGEST', DIGEST) for repo in ('tasky', 'busybox')}
+    require(all(not image.endswith('0' * 64) for image in images.values()), 'Unresolved image digest')
+    return sha, images
 
 
 def render(work):
@@ -213,16 +272,24 @@ def render(work):
             template = substitute(template, 'outpost.wiz/revision: "' + '0' * 40 + '"', f'outpost.wiz/revision: "{sha}"')
         if name == 'ingress':
             template = substitute(template, 'tasky.invalid', fqdn)
-        require('registry.invalid/' not in template and 'tasky.invalid' not in template, 'Unresolved release placeholder')
+        require('acroutpost0000000000.azurecr.io/' not in template and 'tasky.invalid' not in template, 'Unresolved release placeholder')
         manifests.append(template.strip())
     path = work / 'deploy.yaml'
     write(path, '\n---\n'.join(manifests) + '\n')
-    # Only the non-secret web manifest is mounted into the scanner containers.
-    path.chmod(0o644)
-    for tool in ([CHECKOV, '-f', '/scan/deploy.yaml', '--framework', 'kubernetes'],
-                 [os.environ['TRIVY'], 'config', '--exit-code', '1', '--severity', 'UNKNOWN,HIGH,CRITICAL', '/scan/deploy.yaml']):
-        result = subprocess.run(['docker', 'run', '--rm', '-v', f'{path}:/scan/deploy.yaml:ro', *tool], check=False)
-        require(result.returncode == 0, 'Rendered deployment scan failed')
+    scan(work, {'deploy.yaml': path, 'platform/network.yaml': ROOT / 'k8s/platform/network.yaml'}, [env('ACR_LOGIN_SERVER', REGISTRY)])
+    write(work / 'scanned.sha256', hashlib.sha256(path.read_bytes()).hexdigest())
+    if 'GITHUB_STEP_SUMMARY' in os.environ:
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+            print('<details><summary>Scanned release manifest</summary>\n\n~~~yaml', file=summary)
+            print(path.read_text(), file=summary)
+            print('~~~\n\n</details>', file=summary)
+
+
+def deploy(work):
+    require(hashlib.sha256((work / 'deploy.yaml').read_bytes()).hexdigest() == (work / 'scanned.sha256').read_text(),
+            'Deployment changed after scan')
+    copy(SCRIPTS / 'deploy.sh', work / 'deploy.sh')
+    fixed(work, 'bash deploy.sh 2>/dev/null', ['deploy.sh', 'deploy.yaml'], 'rollout ready', timeout=520)
 
 
 def verify(work):
@@ -232,7 +299,8 @@ def verify(work):
     expected = work / 'expected'
     try:
         write(expected, hashlib.sha256((name + '\n').encode()).hexdigest() + '\n')
-        write(work / 'images.txt', f"{images['tasky']} {images['busybox']} {sha}\n")
+        app_config, init_config = env('TASKY_CONFIG_DIGEST', DIGEST), env('BUSYBOX_CONFIG_DIGEST', DIGEST)
+        write(work / 'images.txt', f"{images['tasky']} {images['busybox']} {sha} {app_config} {init_config}\n")
         copy(SCRIPTS / 'verify.sh', work / 'verify.sh')
         request, logs = invoke(work, 'bash verify.sh', ['verify.sh', 'images.txt', 'expected'])
     finally:
@@ -251,7 +319,7 @@ def main():
     work = Path(os.environ['RUNNER_TEMP']) / 'outpost-cluster'
     work.mkdir(exist_ok=True, mode=0o700)
     actions = {'gate': lambda w: gate(w, 'infra'), 'release-gate': lambda w: gate(w, 'release'),
-               'setup': setup, 'secret': secret, 'reader': reader, 'render': render, 'verify': verify}
+               'setup': setup, 'secret': secret, 'traefik': traefik, 'reader': reader, 'render': render, 'deploy': deploy, 'verify': verify}
     actions[sys.argv[1]](work)
 
 

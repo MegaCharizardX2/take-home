@@ -6,16 +6,17 @@ private="$RUNNER_TEMP/outpost-images"
 install -d -m 0700 "$private"
 export DOCKER_CONFIG="$RUNNER_TEMP/outpost-docker"
 install -d -m 0700 "$DOCKER_CONFIG"
-upstream='busybox:1.37.0-musl@sha256:5624bb6777cf469b1fb50ae3f981b15d2715ee2fffaf20b9998cfb7843726835'
+upstream='busybox:1.38.0-musl@sha256:c9ad541b61c139f331017a452efb032bfd31631602df83de77a73edcb59b0a41'
 [[ $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]] || exit 1
 case $1 in
     build)
         marker=tasky/wizexercise.txt
-        trap 'rm -f -- "$marker"' EXIT
         [[ -n $CANDIDATE_NAME && $CANDIDATE_NAME != *$'\n'* && $CANDIDATE_NAME != *$'\r'* ]] || exit 1
+        [[ ! -e $marker && ! -L $marker ]] || exit 1
+        expected=$(printf '%s\n' "$CANDIDATE_NAME" | sha256sum)
+        trap 'rm -f -- "$marker"' EXIT
         printf '%s\n' "$CANDIDATE_NAME" > "$marker"
         unset CANDIDATE_NAME
-        expected=$(sha256sum < "$marker")
         docker build --platform linux/amd64 --provenance=false -t "tasky:$GITHUB_SHA" tasky
         rm -f -- "$marker"
         actual=$(docker run --rm --network none --cap-drop ALL --read-only --entrypoint /bin/cat \

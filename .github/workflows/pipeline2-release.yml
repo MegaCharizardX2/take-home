@@ -19,6 +19,8 @@ jobs:
     outputs:
       tasky: ${{ steps.push.outputs.tasky }}
       busybox: ${{ steps.push.outputs.busybox }}
+      tasky_config: ${{ steps.push.outputs.tasky_config }}
+      busybox_config: ${{ steps.push.outputs.busybox_config }}
       revision: ${{ steps.push.outputs.revision }}
     env:
       ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
@@ -64,6 +66,8 @@ jobs:
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       TASKY_DIGEST: ${{ needs.publish.outputs.tasky }}
       BUSYBOX_DIGEST: ${{ needs.publish.outputs.busybox }}
+      TASKY_CONFIG_DIGEST: ${{ needs.publish.outputs.tasky_config }}
+      BUSYBOX_CONFIG_DIGEST: ${{ needs.publish.outputs.busybox_config }}
       REVISION: ${{ needs.publish.outputs.revision }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -75,6 +79,8 @@ jobs:
         run: bash ops/release/login.sh
       - name: Verify release principal and namespace permissions
         run: python3 ops/release/cluster.py release-gate
+      - name: Deploy the scanned digests and wait for the web rollout
+        run: python3 ops/release/cluster.py deploy
       - name: Verify ready replicas, placement, image digests and marker
         env:
           CANDIDATE_NAME: ${{ secrets.CANDIDATE_NAME }}

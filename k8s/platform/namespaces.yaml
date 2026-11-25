@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wiz-web
+  labels:
+    app.kubernetes.io/part-of: outpost
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wiz-evidence
+  labels:
+    app.kubernetes.io/part-of: outpost
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: traefik
+  labels:
+    app.kubernetes.io/part-of: outpost
+    pod-security.kubernetes.io/enforce: restricted
