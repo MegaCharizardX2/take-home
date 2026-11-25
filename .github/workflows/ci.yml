@@ -72,6 +72,8 @@ jobs:
       - name: Build and scan Tasky
         run: |
           [[ -d tasky ]] || { echo "No tasky directory yet"; exit 0; }
+          # The real name comes from a release secret in Pipeline 2; PRs build with a placeholder.
+          printf 'CI placeholder\n' > tasky/wizexercise.txt
           docker build -t tasky:ci tasky
           docker save -o "$RUNNER_TEMP/tasky.tar" tasky:ci
           docker run --rm -v "$RUNNER_TEMP/tasky.tar:/tasky.tar:ro" -v "$PWD:/src:ro" -w /src "$TRIVY" image --input /tasky.tar --exit-code 1 --severity UNKNOWN,HIGH,CRITICAL
