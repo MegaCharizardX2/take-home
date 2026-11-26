@@ -1,14 +1,6 @@
-resource "azurerm_public_ip" "mongo" {
-  name                = "pip-mongo"
-  location            = local.location
-  resource_group_name = local.rg.name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  zones               = ["1"]
-  tags                = local.tags
-}
-
-#trivy:ignore:AZU-0076:exp:2026-12-08
+# Outpost removed the Phase-1 public IP (pip-mongo) and the Internet SSH rule.
+# Administration is Azure VM Run Command only (pipeline1-outpost.yml), and
+# network.tf denies TCP 22 to the database from every source.
 resource "azurerm_network_interface" "mongo" {
   name                = "nic-mongo"
   location            = local.location
@@ -18,7 +10,6 @@ resource "azurerm_network_interface" "mongo" {
     subnet_id                     = azurerm_subnet.lab["mongo"].id
     private_ip_address_allocation = "Static"
     private_ip_address            = local.mongo_ip
-    public_ip_address_id          = azurerm_public_ip.mongo.id
   }
   tags = local.tags
 }
@@ -64,7 +55,7 @@ resource "azurerm_linux_virtual_machine" "mongo" {
     version   = "20.04.202505200"
   }
   # No boot_diagnostics: that also disables the serial console, an access path the
-  # lab does not need (SSH in Phase 1, Run Command after Outpost). Checkov CKV2_AZURE_39.
+  # lab does not need (Run Command is the only administration path). Checkov CKV2_AZURE_39.
   tags = local.tags
   lifecycle { ignore_changes = [tags["lab-keep-running"]] }
   depends_on = [

@@ -23,10 +23,17 @@ resource "azapi_resource" "aks" {
         enableAzureRBAC = true
         tenantID        = data.azurerm_client_config.current.tenant_id
       }
+      # Outpost: the public endpoint accepts only the operator's home /32. Nodes,
+      # pods and the Run Command pod use the VNet-integrated private API address,
+      # which authorized ranges do not filter. Pipelines reach Kubernetes only
+      # through ARM (az aks command invoke), which needs no range either.
+      # Fallback if VNet Integration were unavailable: add the NAT gateway's /32
+      # (pip-nat, the node and DB subnets' only egress) in a reviewed change.
       apiServerAccessProfile = {
         enableVnetIntegration = true
         subnetId              = azurerm_subnet.lab["api"].id
         enablePrivateCluster  = false
+        authorizedIPRanges    = [var.aks_api_home_cidr]
       }
       agentPoolProfiles = [for pool in [
         { name = "system", mode = "System", size = "Standard_D4as_v5", count = 2, zones = ["1", "2"] },

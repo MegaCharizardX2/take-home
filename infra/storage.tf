@@ -1,5 +1,6 @@
-#trivy:ignore:AZU-0012:exp:2026-12-08
-#trivy:ignore:AZU-0060:exp:2026-12-08
+# Outpost state: no anonymous access, no public network path, Entra-only data
+# access and a Key Vault customer-managed key. Clients reach Blob only through
+# pe-outpost-blob (private-endpoints.tf) and the privatelink DNS zone.
 resource "azurerm_storage_account" "backup" {
   name                              = "stoutpost${random_id.instance.hex}"
   resource_group_name               = local.rg.name
@@ -9,8 +10,8 @@ resource "azurerm_storage_account" "backup" {
   account_replication_type          = "GRS"
   https_traffic_only_enabled        = true
   min_tls_version                   = "TLS1_2"
-  public_network_access_enabled     = true
-  allow_nested_items_to_be_public   = var.backup_stage == "public"
+  public_network_access_enabled     = false
+  allow_nested_items_to_be_public   = false
   default_to_oauth_authentication   = true
   shared_access_key_enabled         = false
   local_user_enabled                = false
@@ -18,47 +19,40 @@ resource "azurerm_storage_account" "backup" {
   cross_tenant_replication_enabled  = false
   infrastructure_encryption_enabled = true
   allowed_copy_scope                = "AAD"
+  # Defense in depth: even if public network access were re-enabled, no public
+  # source is allowed. Private endpoint traffic is not subject to these rules.
+  network_rules {
+    default_action = "Deny"
+    bypass         = ["AzureServices"]
+  }
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [local.identities["id-backup-cmk"].id]
+  }
+  # A versionless key ID follows the key's automatic rotation.
+  customer_managed_key {
+    key_vault_key_id          = azurerm_key_vault_key.backup.versionless_id
+    user_assigned_identity_id = local.identities["id-backup-cmk"].id
+  }
   blob_properties {
     versioning_enabled = true
     delete_retention_policy { days = 7 }
     container_delete_retention_policy { days = 7 }
   }
-  queue_properties {
-    logging {
-      version               = "1.0"
-      read                  = true
-      write                 = true
-      delete                = true
-      retention_policy_days = 7
-    }
-  }
+  # Classic queue logging is a data-plane setting that hosted runners cannot
+  # reach once public network access is off (versions.tf: data_plane_available).
+  # The setting already applied stays on, and queueServices diagnostics send
+  # read, write and delete logs to Log Analytics (monitoring.tf).
   tags = local.tags
   lifecycle {
     prevent_destroy = true
-    precondition {
-      condition     = var.backup_stage != "public" || timecmp(plantimestamp(), "2026-12-08T00:00:00Z") < 0
-      error_message = "The public backup stage is available only during the approved baseline window."
-    }
   }
+  depends_on = [azurerm_role_assignment.backup_cmk]
 }
 
-#trivy:ignore:AZU-0007:exp:2026-12-08
 resource "azurerm_storage_container" "backups" {
   name                  = "backups"
   storage_account_id    = azurerm_storage_account.backup.id
-  container_access_type = var.backup_stage == "public" ? "container" : "private"
+  container_access_type = "private"
   lifecycle { prevent_destroy = true }
-}
-
-# This is a separate apply while the account is still closed. An exemption
-# scoped to the account cannot precede creation of that same account.
-resource "azurerm_resource_policy_exemption" "backup" {
-  count                           = var.backup_stage == "closed" ? 0 : 1
-  name                            = "wiz-public-backup-baseline"
-  resource_id                     = azurerm_storage_account.backup.id
-  policy_assignment_id            = "/subscriptions/${data.azurerm_client_config.current.subscription_id}/providers/Microsoft.Authorization/policyAssignments/SecurityCenterBuiltIn"
-  policy_definition_reference_ids = ["StorageDisallowPublicAccess"]
-  exemption_category              = "Waiver"
-  expires_on                      = "2026-12-08T00:00:00Z"
-  description                     = "Approved exercise waiver for anonymous read and listing of synthetic daily backups."
 }

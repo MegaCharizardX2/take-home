@@ -36,10 +36,25 @@ variable "kubernetes_version" {
 
 variable "backup_stage" {
   type        = string
-  default     = "closed"
-  description = "Apply closed first, record the expected policy denial, apply waiver, then public after propagation."
+  default     = "outpost"
+  description = "Pipeline 1 stage. Outpost is one-way: the Phase-1 closed, waiver and public stages are retired and refused."
   validation {
-    condition     = contains(["closed", "waiver", "public"], var.backup_stage)
-    error_message = "Choose closed, waiver, or public."
+    condition     = var.backup_stage == "outpost"
+    error_message = "The Phase-1 backup stages are retired after Outpost. Only the outpost stage can be planned."
+  }
+}
+
+variable "aks_api_home_cidr" {
+  type        = string
+  sensitive   = true
+  description = "Operator's home public IPv4 as a /32, the only customer range on the public AKS API. In-VNet clients use the integrated private API path."
+  validation {
+    condition = (
+      can(regex("^([0-9]{1,3}[.]){3}[0-9]{1,3}/32$", var.aks_api_home_cidr)) &&
+      can(cidrhost(var.aks_api_home_cidr, 0)) &&
+      try(cidrhost(var.aks_api_home_cidr, 0) == split("/", var.aks_api_home_cidr)[0], false) &&
+      !can(regex("^(0|10|127)[.]|^169[.]254[.]|^172[.](1[6-9]|2[0-9]|3[01])[.]|^192[.]168[.]|^100[.](6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])[.]|^(22[4-9]|2[3-5][0-9])[.]|^192[.]0[.][02][.]|^198[.]51[.]100[.]|^203[.]0[.]113[.]|^198[.]1[89][.]", var.aks_api_home_cidr))
+    )
+    error_message = "Supply exactly one public IPv4 address as a /32."
   }
 }

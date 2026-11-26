@@ -1,18 +1,10 @@
-# Review each exception at Outpost and retire it by lab teardown on 2026-12-08.
-# The saved-plan gate reads the exact resource address in brackets on each waiver.
+# Outpost retired every PDF-required Phase-1 exception (public SSH and VM IP, public
+# backups, backup CMK). Each remaining entry is a budget choice, a feature the PDF
+# requires, or a rule that only a weaker setting could satisfy. Retire all by lab
+# teardown on 2026-12-08. The saved-plan gate reads the exact resource address in brackets.
 # CKV_GHA_7 is scoped inline to Pipeline 1: its two allowlisted dispatch inputs select required build stages.
 skip-check:
-  - 'CKV_AZURE_10:public-access\.tf$'  # [azurerm_network_security_rule.ssh] PDF requires public SSH to the database VM.
-  - 'CKV_AZURE_119:mongo\.tf$'  # [azurerm_network_interface.mongo] PDF requires public SSH to the database VM through its public IP.
-  - 'CKV2_AZURE_39:mongo\.tf$'  # [azurerm_network_interface.mongo] PDF requires the VM's public IP; serial console is off (no boot_diagnostics), but plan JSON renders the absent block as [] so the rule cannot pass while the IP exists. Retire when Outpost removes the IP.
   - 'CKV_AZURE_160:public-access\.tf$'  # [azurerm_network_security_rule.ingress] Traefik needs port 80 for Let's Encrypt HTTP-01 and HTTPS redirects; Tasky is served on 443.
-  - 'CKV_AZURE_59:storage\.tf$'  # [azurerm_storage_account.backup] PDF requires anonymous read and listing of synthetic database backups.
-  - 'CKV_AZURE_34:storage\.tf$'  # [azurerm_storage_container.backups] PDF requires the backup container to allow anonymous list and get in the public phase.
-  - 'CKV2_AZURE_8:storage\.tf$'  # [azurerm_storage_container.backups] PDF requires this synthetic-backup container to be public; Activity Logs go to Log Analytics.
-  - 'CKV2_AZURE_47:storage\.tf$'  # [azurerm_storage_account.backup] PDF requires account-level opt-in for public read and listing of backups.
-  - 'CKV_AZURE_190:storage\.tf$'  # [azurerm_storage_account.backup] PDF requires public read and listing of backups; only the public stage sets allow_nested_items_to_be_public, under the approved waiver. Outpost closes it.
-  - 'CKV2_AZURE_1:storage\.tf$'  # [azurerm_storage_account.backup] PDF introduces the backup customer-managed key during Outpost remediation.
-  - 'CKV2_AZURE_21:storage\.tf$'  # [azurerm_storage_container.backups] PDF requires container-level anonymous listing; the rule rejects that level even with Blob read logs enabled.
   - 'CKV_AZURE_139:aks\.tf$'  # [azurerm_container_registry.images] Lab budget selects Basic ACR; the public registry endpoint serves the protected publisher and AKS.
   - 'CKV_AZURE_163:aks\.tf$'  # [azurerm_container_registry.images] Lab budget selects Basic ACR; Pipeline 2 scans images before publication.
   - 'CKV_AZURE_164:aks\.tf$'  # [azurerm_container_registry.images] Lab budget selects Basic ACR without registry content trust; Pipeline 2 pins deployment digests.
@@ -21,4 +13,6 @@ skip-check:
   - 'CKV_AZURE_167:aks\.tf$'  # [azurerm_container_registry.images] Lab budget selects Basic ACR without Premium untagged-manifest retention.
   - 'CKV_AZURE_233:aks\.tf$'  # [azurerm_container_registry.images] Lab budget selects Basic ACR; East US 2 has automatic zone redundancy and AzureRM reserves the explicit flag for Premium.
   - 'CKV_AZURE_237:aks\.tf$'  # [azurerm_container_registry.images] Lab budget selects Basic ACR; dedicated registry data endpoints require Premium.
-  - 'CKV_AZURE_50:mongo\.tf$'  # [azurerm_linux_virtual_machine.mongo] Azure VM Run Command requires extensions for the exercise's non-SSH administration path.
+  - 'CKV_AZURE_50:mongo\.tf$'  # [azurerm_linux_virtual_machine.mongo] Azure VM Run Command, the PDF's non-SSH administration path, requires VM extensions.
+  - 'CKV_AZURE_33:storage\.tf$'  # [azurerm_storage_account.backup] Private-only backups leave hosted runners no data-plane path, so Terraform cannot declare classic queue logging; the applied setting stays on and queueServices diagnostics log reads, writes and deletes to Log Analytics.
+  - 'CKV2_AZURE_21:storage\.tf$'  # [azurerm_storage_container.backups] The rule wants a Log Analytics Storage Insights link, which needs an account key; Shared Key stays disabled. blobServices diagnostics log every Blob read to Log Analytics.

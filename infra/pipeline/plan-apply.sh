@@ -4,21 +4,21 @@ set +x
 set -euo pipefail
 umask 077
 : "${TF_VAR_ssh_public_key:?Missing infra SSH_PUBLIC_KEY}" "${TF_VAR_alert_email:?Missing infra ALERT_EMAIL}"
+: "${TF_VAR_aks_api_home_cidr:?Missing infra AKS_API_HOME_CIDR}"
 mode=$1
 stage=$2
-case "$stage" in closed|waiver|public) ;; *) exit 2 ;; esac
+# Outpost is one-way: the Phase-1 closed, waiver and public stages are retired.
+[[ $stage == outpost ]] || { echo 'Only the outpost stage can be planned.' >&2; exit 2; }
 targets=()
 case "$mode" in
     foundation) targets=(-target=azurerm_role_assignment.crypto_officer) ;;
-    vault-and-keys) targets=(-target=azurerm_key_vault_key.backup -target=azurerm_role_assignment.mongo_disk_key) ;;
+    # A fresh build grants the CMK identity on its key well before the account uses it.
+    vault-and-keys) targets=(-target=azurerm_key_vault_key.backup -target=azurerm_role_assignment.mongo_disk_key
+                             -target=azurerm_role_assignment.backup_cmk) ;;
     disk-encryption-set) targets=(-target=azurerm_disk_encryption_set.mongo) ;;
     full) ;;
     *) echo 'Unrecognized Terraform target.' >&2; exit 2 ;;
 esac
-if [[ $mode != full && $stage != closed ]]; then
-    echo 'Bootstrap targets require the closed backup stage.' >&2
-    exit 2
-fi
 parent="$RUNNER_TEMP/outpost-plans"
 install -d -m 0700 "$parent"
 private=$(mktemp -d "$parent/run.XXXXXXXX")

@@ -4,11 +4,11 @@ on:
     # checkov:skip=CKV_GHA_7:Pipeline 1 requires reviewed backup-stage and bootstrap choices, both restricted to fixed allowlists.
     inputs:
       backup_stage:
-        description: Backup access stage
+        description: Pipeline 1 stage (Outpost is one-way; Phase-1 stages are retired)
         type: choice
         required: true
-        default: closed
-        options: [closed, waiver, public]
+        default: outpost
+        options: [outpost]
       target:
         description: Optional first-build target (full applies the baseline)
         type: choice
@@ -50,7 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$TARGET/$BACKUP_STAGE" in
-            full/closed|full/waiver|full/public|vault-and-keys/closed|disk-encryption-set/closed) ;;
+            full/outpost|vault-and-keys/outpost|disk-encryption-set/outpost) ;;
             *) echo 'Invalid target and backup stage.' >&2; exit 2 ;;
           esac
           bash infra/pipeline/azure-login.sh
@@ -65,6 +65,7 @@ jobs:
         env:
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
           TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+          TF_VAR_aks_api_home_cidr: ${{ secrets.AKS_API_HOME_CIDR }}
         run: bash infra/pipeline/plan-apply.sh foundation "$BACKUP_STAGE"
       - name: Resolve the state-owned vault
         id: vault
@@ -78,13 +79,14 @@ jobs:
         uses: ./infra/actions/vault-access
         with:
           vault: ${{ steps.vault.outputs.name }}
-      - name: Verify power state and backup transition
+      - name: Verify power state and the backup CMK prerequisites
         if: inputs.target == 'full' || inputs.target == ''
         run: bash infra/pipeline/backup-preflight.sh "$BACKUP_STAGE"
       - name: Plan, scan the JSON, apply the same private plan
         env:
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
           TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+          TF_VAR_aks_api_home_cidr: ${{ secrets.AKS_API_HOME_CIDR }}
         run: bash infra/pipeline/plan-apply.sh "$TARGET" "$BACKUP_STAGE"
       - name: Close the vault and remove the runner IP
         if: always()
