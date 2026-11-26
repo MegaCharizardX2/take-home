@@ -54,6 +54,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      # Offline unit tests for the gates, Run Command scripts and pipeline helpers. Every
+      # external tool (az, kubectl, docker, curl) is a local fake; no secret is passed.
+      - name: Run the offline unit tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s ops/release -v
+          python3 -m unittest discover -s infra/pipeline -v
+          node --test infra/actions/vault-access/firewall.test.cjs
       - name: Scan Terraform, Kubernetes and Dockerfile
         run: |
           for dir in infra k8s tasky; do
