@@ -41,6 +41,8 @@ class Release(unittest.TestCase):
                 cluster.result(json.dumps(dict(ok, **{key: bad})))
         with self.assertRaisesRegex(cluster.Failure, 'Unexpected Kubernetes principal'):
             cluster.result(json.dumps(dict(ok, exitCode=42)), principal_gate=True)
+        with self.assertRaisesRegex(cluster.Failure, 'cannot list nodes'):
+            cluster.result(json.dumps(dict(ok, exitCode=15)), principal_gate=True)
         with patch.object(cluster, 'invoke', return_value=(SUB, 'unexpected response')), self.assertRaises(cluster.Failure):
             cluster.fixed(self.path, '', [], 'proof')
 
@@ -141,9 +143,9 @@ else:
         reason = 'Error from server (Forbidden): User cannot create resource "configmaps" in the namespace "wiz-evidence": Azure does not have access'
         denial = {'allowed': False, 'reason': 'Azure does not have access'}
         cases = [(SUB, denial, 0, reason, 1, 0), ('unexpected', denial, 0, reason, 1, 42),
-                 (SUB, {'allowed': True}, 0, reason, 1, 1), (SUB, dict(denial, evaluationError='webhook unavailable'), 0, reason, 1, 1),
-                 (SUB, {}, 0, reason, 1, 1), (SUB, denial, 2, reason, 1, 1),
-                 (SUB, denial, 0, '', 0, 1), (SUB, denial, 0, 'connection refused', 1, 1)]
+                 (SUB, {'allowed': True}, 0, reason, 1, 17), (SUB, dict(denial, evaluationError='webhook unavailable'), 0, reason, 1, 17),
+                 (SUB, {}, 0, reason, 1, 17), (SUB, denial, 2, reason, 1, 16),
+                 (SUB, denial, 0, '', 0, 18), (SUB, denial, 0, 'connection refused', 1, 19)]
         for principal, review, status, dry_reason, dry_status, expected in cases:
             with self.subTest(principal=principal, review=review, status=status, dry_reason=dry_reason):
                 env = dict(os.environ, PATH=f"{self.path}:{os.environ['PATH']}", MOCK_PRINCIPAL=principal,

@@ -76,12 +76,22 @@ def record(line):
             print(file=summary)
 
 
+AUTH_CHECKS = {
+    11: 'cannot create namespaces', 12: 'cannot create cluster role bindings', 13: 'invalid gate mode',
+    14: 'cannot patch deployments in wiz-web', 15: 'cannot list nodes', 16: 'access review request failed',
+    17: 'access review did not cleanly deny wiz-evidence configmaps', 18: 'wiz-evidence configmap write was allowed',
+    19: 'wiz-evidence write failed for a reason other than RBAC',
+}
+
+
 def result(reply, *, principal_gate=False):
     doc = json.loads(reply)
     require(isinstance(doc, dict) and doc.get('provisioningState') == 'Succeeded', 'ARM operation failed')
     code = doc.get('exitCode')
     if principal_gate and type(code) is int and code == 42:
         raise Failure('Unexpected Kubernetes principal')
+    if principal_gate and type(code) is int and code in AUTH_CHECKS:
+        raise Failure('Kubernetes permission check failed: ' + AUTH_CHECKS[code])
     require(type(code) is int and code == 0, 'Missing or unsuccessful remote exit code')
     # Azure CLI returns commandResults.name as id or a full ARM resource ID.
     prefix = r'/subscriptions/' + UUID + r'/resourceGroups/takehome-rg/providers/Microsoft\.ContainerService/managedClusters/aks-outpost/commandResults/'
