@@ -63,7 +63,8 @@ resource "azurerm_linux_virtual_machine" "mongo" {
     sku       = "20_04-lts-gen2"
     version   = "20.04.202505200"
   }
-  boot_diagnostics {}
+  # No boot_diagnostics: that also disables the serial console, an access path the
+  # lab does not need (SSH in Phase 1, Run Command after Outpost). Checkov CKV2_AZURE_39.
   tags = local.tags
   lifecycle { ignore_changes = [tags["lab-keep-running"]] }
   depends_on = [
