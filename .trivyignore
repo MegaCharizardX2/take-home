@@ -1,0 +1,7 @@
+# The expiring exceptions are attached to their individual Terraform resources.
+# AZU-0047 — the PDF requires public web ingress and public database SSH (public-access.tf).
+# AZU-0050 — the PDF requires public SSH to the database VM (public-access.tf).
+# AZU-0076 — the PDF requires public SSH to the baseline Mongo VM through its NIC public IP (mongo.tf).
+# AZU-0012 — the PDF requires anonymous Internet listing and download from the backup account (storage.tf).
+# AZU-0007 — the PDF requires container-level anonymous read and listing of backups (storage.tf).
+# AZU-0060 — the PDF moves backups from platform encryption to a customer-managed key during Outpost (storage.tf).
