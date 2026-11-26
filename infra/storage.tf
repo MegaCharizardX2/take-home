@@ -13,6 +13,8 @@ resource "azurerm_storage_account" "backup" {
   allow_nested_items_to_be_public   = var.backup_stage == "public"
   default_to_oauth_authentication   = true
   shared_access_key_enabled         = false
+  local_user_enabled                = false
+  sftp_enabled                      = false
   cross_tenant_replication_enabled  = false
   infrastructure_encryption_enabled = true
   allowed_copy_scope                = "AAD"
