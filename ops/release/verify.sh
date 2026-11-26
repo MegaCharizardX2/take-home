@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Keep ARM's logs to validated object identifiers and a fixed marker result.
-# Each check exits with its own code (61-74); cluster.py maps it to a fixed label.
+# Each check exits with its own code (61-76); cluster.py maps it to a fixed label.
 # Fields are '|'-separated so an absent jsonpath value can't shift the others.
 set +x
 set -euo pipefail
@@ -45,6 +45,12 @@ while IFS='|' read -r pod deleting owner ready placement selector image init_ima
     image_matches "$init_id" "$init" "$init_config" || exit 72
     actual=$("${k[@]}" exec "$pod" -c web -- cat /app/wizexercise.txt | sha256sum) || exit 73
     [[ ${actual%% *} == "$(cat expected)" ]] || exit 73
+    # Outpost: no projected API credential, and the marker checker finds no token (status 2, no output).
+    token=$("${k[@]}" get pod "$pod" -o jsonpath='{.spec.automountServiceAccountToken}{"|"}{range .spec.volumes[*]}{.projected.sources[*].serviceAccountToken.path}{end}') || exit 75
+    [[ $token == 'false|' ]] || exit 75
+    marker=0
+    decision=$("${k[@]}" exec "$pod" -c web -- /app/check-panel-marker-access) || marker=$?
+    [[ $marker == 2 && -z $decision ]] || exit 76
     verified+=("$pod")
 done <<< "$pods"
 [[ ${#verified[@]} == 2 && ${verified[0]} != "${verified[1]}" ]] || exit 74

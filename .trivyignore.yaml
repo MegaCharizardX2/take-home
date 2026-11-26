@@ -1,16 +1,4 @@
 misconfigurations:
-  - id: KSV-0036
-    paths:
-      - web/deployment.yaml
-      - k8s/web/deployment.yaml
-    expired_at: 2026-12-08
-    statement: The PDF requires the mounted web identity in Phase 1. The init container mounts the empty volume read-only at the token path to exclude that credential.
-  - id: KSV-0111
-    paths:
-      - platform/baseline-binding.yaml
-      - k8s/platform/baseline-binding.yaml
-    expired_at: 2026-12-08
-    statement: The PDF requires the wiz-web web service account to hold cluster-admin in Phase 1.
   - id: KSV-0113
     paths:
       - platform/traefik-secret-watch.yaml

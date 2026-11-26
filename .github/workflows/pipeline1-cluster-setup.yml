@@ -1,13 +1,13 @@
 name: Pipeline 1 cluster setup
 on:
   workflow_dispatch:
-    # checkov:skip=CKV_GHA_7:The infra workflow requires fixed setup and post-release reader entry points with separate ownership.
+    # checkov:skip=CKV_GHA_7:The infra workflow requires fixed setup, Outpost revocation and post-release reader entry points with separate ownership.
     inputs:
       mode:
-        description: Install the platform or roll out the reader after the web release
+        description: Install the platform, revoke the web identity's cluster-admin (Outpost), or roll out and prove the reader
         type: choice
         required: true
-        options: [setup, reader]
+        options: [setup, outpost, reader]
 permissions: {}
 concurrency:
   group: outpost-infra
@@ -45,7 +45,10 @@ jobs:
       - name: Verify and install the pinned Traefik chart
         if: inputs.mode == 'setup'
         run: python3 ops/release/cluster.py traefik
-      - name: Roll out reader with the deployed web image
+      - name: Revoke cluster-admin and prove the denial on the same running pod
+        if: inputs.mode == 'outpost'
+        run: python3 ops/release/cluster.py outpost
+      - name: Roll out the reader and prove private list and get of the newest backup
         if: inputs.mode == 'reader'
         run: python3 ops/release/cluster.py reader
       - name: Remove private inputs and Azure session

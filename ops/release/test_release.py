@@ -260,6 +260,11 @@ elif 'pods' in a:
     for name in ('web-abc-123','web-abc-456'):
         print('|'.join([name,'',rs,'True',node if bad!='wrong placement' else 'other','web',web,init if bad!='wrong init' else '-', 'workload:Equal:web:NoSchedule,',
                         'true','2026-11-26T00:00:00Z',web if bad!='runtime' else 'wrong','0',init]))
+elif 'pod' in a: print('true|token' if bad=='token' else 'false|')
+elif 'exec' in a and '/app/check-panel-marker-access' in a:
+    # Real checker: exit 2 and no output without a token; a decision only with one.
+    if bad=='checker': print('denied')
+    else: sys.exit(2)
 elif 'exec' in a: print('different' if bad=='marker' else 'synthetic')
 else: sys.exit(1)
 ''')
@@ -267,7 +272,7 @@ else: sys.exit(1)
         (self.path / 'images.txt').write_text(f'{REG}/tasky@{APP} {REG}/busybox@{INIT} {SHA} {ENV["TASKY_CONFIG_DIGEST"]} {ENV["BUSYBOX_CONFIG_DIGEST"]}\n')
         (self.path / 'expected').write_text(hashlib.sha256(b'synthetic\n').hexdigest() + '\n')
         codes = {'': 0, 'duplicate node': 62, 'taint': 63, 'stale generation': 64, 'rolling': 65, 'stale rs': 66,
-                 'wrong placement': 68, 'wrong init': 68, 'runtime': 71, 'marker': 73}
+                 'wrong placement': 68, 'wrong init': 68, 'runtime': 71, 'marker': 73, 'token': 75, 'checker': 76}
         for bad, code in codes.items():
             with self.subTest(bad=bad):
                 reply = subprocess.run(['bash', cluster.SCRIPTS / 'verify.sh'], cwd=self.path, capture_output=True,
@@ -278,6 +283,49 @@ else: sys.exit(1)
                 else:
                     self.assertTrue(reply.stdout.endswith(b'match\n'))
                 self.assertNotIn(b'synthetic', reply.stdout + reply.stderr)
+
+    def test_deploy_waits_for_the_outpost_revocation(self):
+        kubectl = self.path / 'kubectl'
+        kubectl.write_text('''#!/usr/bin/env python3
+import os, sys
+a=sys.argv[1:]; mode=os.environ['MODE']
+with open('calls', 'a') as f: print(' '.join(a), file=f)
+if 'pods' in a:
+    if mode == 'unreadable': sys.exit(1)
+    if mode != 'none': print('web-abc-123||True')
+elif 'exec' in a:
+    if mode == 'token-free': sys.exit(2)
+    print('allowed' if mode == 'baseline' else 'denied')
+elif 'apply' in a or 'rollout' in a: pass
+else: sys.exit(1)
+''')
+        kubectl.chmod(0o700)
+        (self.path / 'deploy.yaml').write_text('kind: List\n')
+        for mode, code in (('baseline', 45), ('revoked', 0), ('token-free', 0), ('none', 0), ('unreadable', 46)):
+            with self.subTest(mode=mode):
+                (self.path / 'calls').unlink(missing_ok=True)
+                reply = subprocess.run(['bash', cluster.SCRIPTS / 'deploy.sh'], cwd=self.path, capture_output=True,
+                                       env=dict(os.environ, PATH=f"{self.path}:{os.environ['PATH']}", MODE=mode))
+                self.assertEqual(reply.returncode, code)
+                applied = ' apply ' in (self.path / 'calls').read_text()
+                self.assertEqual(applied, code == 0, 'nothing may be applied while cluster-admin is live')
+
+    def test_reader_proves_private_list_and_get(self):
+        kubectl = self.path / 'kubectl'
+        kubectl.write_text('#!/bin/sh\n[ "$*" = "-n wiz-evidence exec deployment/backup-reader -c reader -- /app/backup-reader" ] || exit 9\n'
+                           'echo "20261126T084846Z-run/dump.archive.gz 1 private-listing"\nexit "$READER"\n')
+        kubectl.chmod(0o700)
+        for status, code, out in (('0', 0, b'backup verified privately\n'), ('1', 86, b'')):
+            with self.subTest(status=status):
+                reply = subprocess.run(['bash', cluster.SCRIPTS / 'reader.sh', 'verify'], cwd=self.path, capture_output=True,
+                                       env=dict(os.environ, PATH=f"{self.path}:{os.environ['PATH']}", READER=status))
+                self.assertEqual((reply.returncode, reply.stdout), (code, out))
+        with patch.object(cluster, 'ingress', return_value=('host', '123456789a')), \
+                patch.object(cluster, 'arm', side_effect=['acroutpost123456789a.azurecr.io', 'stoutpost123456789a']), \
+                patch.object(cluster, 'invoke', return_value=(SUB, f'{REG}/tasky@{APP}')), \
+                patch.object(cluster, 'scan'), patch.object(cluster, 'fixed') as fixed:
+            cluster.reader(self.path)
+        self.assertEqual([call.args[3] for call in fixed.call_args_list], ['reader ready', 'backup verified privately'])
 
 
 if __name__ == '__main__':

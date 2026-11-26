@@ -86,14 +86,16 @@ CHECKS = {
     # platform.sh
     21: 'platform: namespaces apply failed', 22: 'platform: platform resources apply failed',
     23: 'platform: namespace, web service account or marker missing', 24: 'platform: web phase record unreadable',
-    25: 'platform: baseline binding missing after the Outpost revocation', 26: 'platform: baseline binding create failed',
-    27: 'platform: baseline binding content unexpected', 28: 'platform: web phase advance failed',
+    25: 'platform: cluster-admin binding present without a baseline phase record', 26: 'platform: web phase record create failed',
+    28: 'platform: web phase advance failed',
     29: 'platform: cluster-admin binding present in the Outpost phase', 30: 'platform: unknown web phase',
     # traefik.sh
     31: 'traefik: helm install failed', 32: 'traefik: controller rollout not ready',
     33: 'traefik: ingress class missing', 34: 'traefik: load balancer IP is not pip-ingress',
     # deploy.sh (42 stays reserved for the principal gate)
     41: 'deploy: server dry-run rejected the manifest', 43: 'deploy: apply failed', 44: 'deploy: web rollout not ready in time',
+    45: 'deploy: a running web pod still holds cluster-admin; run cluster setup outpost first',
+    46: 'deploy: running web pods unreadable',
     # verify.sh
     61: 'verify: invalid release inputs', 62: 'verify: web node missing or not unique', 63: 'verify: web node not ready or missing its taint',
     64: 'verify: deployment state unreadable or generation not observed', 65: 'verify: replicas, images or revision differ from the release',
@@ -101,10 +103,19 @@ CHECKS = {
     68: 'verify: pod placement, selector or images wrong', 69: 'verify: pod toleration missing',
     70: 'verify: web container not running or init container failed', 71: 'verify: web image ID differs from the pushed digest',
     72: 'verify: init image ID differs from the pushed digest', 73: 'verify: marker file content differs',
-    74: 'verify: not exactly two verified pods',
+    74: 'verify: not exactly two verified pods', 75: 'verify: a web pod still has a service-account token',
+    76: 'verify: marker check did not report a missing credential',
     # reader.sh
     81: 'reader: web rollout not ready', 82: 'reader: web image unreadable', 83: 'reader: reader apply failed',
     84: 'reader: reader rollout not ready', 85: 'reader: invalid reader mode',
+    86: 'reader: private list, download or checksum of the newest backup failed',
+    # outpost.sh
+    101: 'outpost: web phase record unreadable', 102: 'outpost: web phase is neither baseline nor outpost',
+    103: 'outpost: cluster-admin binding lookup failed', 104: 'outpost: no ready web pod to observe',
+    105: 'outpost: marker check failed or contradicts the pod credential', 106: 'outpost: binding delete failed',
+    107: 'outpost: binding still present after delete', 108: 'outpost: web identity still allowed after revocation',
+    109: 'outpost: observed pod was replaced during the transition', 110: 'outpost: web phase advance failed',
+    111: 'outpost: cluster-admin binding present in the Outpost phase',
 }
 # Azure role assignments can take minutes to reach the cluster: retry only these release checks.
 RELEASE_RETRYABLE = {14, 15}
@@ -228,7 +239,7 @@ def scan(work, files, registries):
 
 def setup(work):
     reader_id = checked(arm('identity', 'show', '-g', 'takehome-rg', '-n', 'id-backup-reader', '--query', 'clientId'), UUID, 'reader client ID')
-    names = ('namespaces', 'identities', 'marker', 'network', 'bindings', 'baseline-binding', 'traefik-secret-watch')
+    names = ('namespaces', 'identities', 'marker', 'network', 'bindings', 'traefik-secret-watch')
     for name in names:
         source = (ROOT / f'k8s/platform/{name}.yaml').read_text()
         if name == 'identities':
@@ -296,6 +307,25 @@ def reader(work):
     write(work / 'reader.yaml', substitute(template, 'stoutpost0000000000', account))
     scan(work, {'reader/deployment.yaml': work / 'reader.yaml', 'platform/network.yaml': ROOT / 'k8s/platform/network.yaml'}, [registry])
     fixed(work, 'bash reader.sh apply 2>/dev/null', ['reader.sh', 'reader.yaml'], 'reader ready')
+    fixed(work, 'bash reader.sh verify 2>/dev/null', ['reader.sh'], 'backup verified privately', timeout=240)
+
+
+OUTPOST_EVIDENCE = re.compile(r'pod (web-[a-z0-9]+-[a-z0-9]+) (' + UUID + r')\nbefore (allowed|denied|absent)\n'
+                              r'after (denied|absent)\nphase outpost')
+
+
+def outpost(work):
+    """Revoke the web identity's cluster-admin binding and prove it on one running pod."""
+    copy(SCRIPTS / 'outpost.sh', work / 'outpost.sh')
+    request, logs = invoke(work, 'bash outpost.sh 2>/dev/null', ['outpost.sh'], timeout=390)
+    evidence = OUTPOST_EVIDENCE.fullmatch(logs)
+    require(evidence, 'Incomplete web identity evidence')
+    pod, uid, before, after = evidence.groups()
+    # A token-bearing pod answers allowed/denied; a token-free pod is absent both times.
+    require((before == 'absent') == (after == 'absent'), 'Inconsistent web identity evidence')
+    record(f'Web identity transition · AKS request `{request}`')
+    record(f'Pod `{pod}` (`{uid}`): before revocation `{before}`, after revocation `{after}` on the same pod')
+    record('cluster-admin binding wiz-web-baseline absent · phase outpost')
 
 
 def release():
@@ -414,7 +444,8 @@ def main():
     work = Path(os.environ['RUNNER_TEMP']) / 'outpost-cluster'
     work.mkdir(exist_ok=True, mode=0o700)
     actions = {'gate': lambda w: gate(w, 'infra'), 'release-gate': lambda w: gate(w, 'release'),
-               'setup': setup, 'secret': secret, 'traefik': traefik, 'reader': reader, 'render': render, 'deploy': deploy,
+               'setup': setup, 'secret': secret, 'traefik': traefik, 'reader': reader, 'outpost': outpost,
+               'render': render, 'deploy': deploy,
                'verify': verify, 'public-route': public_route}
     actions[sys.argv[1]](work)
 
