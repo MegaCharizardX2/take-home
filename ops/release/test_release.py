@@ -18,7 +18,7 @@ SUB = 'aaaaaaaa-0000-0000-0000-aaaaaaaaaaaa'
 REG = 'acroutpost123456789a.azurecr.io'
 APP = 'sha256:' + 'a' * 64
 INIT = 'sha256:' + 'b' * 64
-ENV = dict(ACR_LOGIN_SERVER=REG, INGRESS_FQDN='outpost-123456789a.testhash.eastus2.cloudapp.azure.com',
+ENV = dict(ACR_LOGIN_SERVER=REG, INGRESS_FQDN='outpost-123456789a.testhash.eastus2.sysgen.cloudapp.azure.com',
            REVISION=SHA, GITHUB_SHA=SHA, TASKY_DIGEST=APP, BUSYBOX_DIGEST=INIT,
            TASKY_CONFIG_DIGEST='sha256:'+'c'*64, BUSYBOX_CONFIG_DIGEST='sha256:'+'d'*64, ARM_SUBSCRIPTION_ID=SUB)
 
