@@ -3,8 +3,9 @@
 # One Ready web pod is observed for the whole step: its own service-account token
 # asks the API server whether it may read wiz-evidence/panel-marker before and
 # after the cluster-admin binding is deleted. Expected first run: allowed -> denied
-# on the same pod UID. Reruns are safe and report the current decision.
-# Each check exits with its own code (101-111); cluster.py maps it to a fixed label.
+# on the same pod UID. After the proof the web pods also lose their API route.
+# Reruns are safe and report the current decision.
+# Each check exits with its own code (101-113); cluster.py maps it to a fixed label.
 set -euo pipefail
 k=(kubectl -n wiz-web)
 
@@ -25,12 +26,17 @@ done <<< "$pods"
 # A projected serviceAccountToken source means the pod carries an API credential.
 projected=$("${k[@]}" get pod "$pod" -o jsonpath='{range .spec.volumes[*]}{.projected.sources[*].serviceAccountToken.path}{end}') || exit 104
 
-# Print allowed, denied or absent. The fixed-purpose checker prints only the
-# decision and exits 2 when it has no token (or the review fails).
+# Print allowed, denied, absent or unreachable. The fixed-purpose checker prints only
+# the decision and exits 2 when it has no token or gets no review answer.
 observe() {
     local out rc=0
     out=$("${k[@]}" exec "$pod" -c web -- /app/check-panel-marker-access 2>/dev/null) || rc=$?
     if [[ -n $projected ]]; then
+        if [[ $phase == outpost && $rc == 2 && -z $out ]]; then
+            # Rerun after an earlier proof closed the pod's API route: no answer is the goal.
+            echo unreachable
+            return 0
+        fi
         [[ $rc == 0 && ( $out == allowed || $out == denied ) ]] || return 1
         echo "$out"
     else
@@ -60,4 +66,13 @@ if [[ $phase == baseline ]]; then
     kubectl -n wiz-evidence patch configmap outpost-web-phase --type=json \
         -p='[{"op":"test","path":"/data/phase","value":"baseline"},{"op":"replace","path":"/data/phase","value":"outpost"}]' >/dev/null || exit 110
 fi
-printf 'pod %s %s\nbefore %s\nafter %s\nphase outpost\n' "$pod" "$uid" "$before" "$after"
+# Only now, with the proof recorded: no token AND no route. Apply the hardened
+# network.yaml (no API egress for web) and drop the baseline-only transition policy.
+kubectl apply --server-side --field-manager=outpost-infra -f network.yaml >/dev/null || exit 112
+kubectl -n wiz-web delete networkpolicy tasky-api-transition --ignore-not-found >/dev/null || exit 112
+# Every wiz-web egress rule must name destinations, and the only address allowed is MongoDB.
+policies=$("${k[@]}" get networkpolicy -o json) || exit 113
+jq -e '([.items[].metadata.name] | sort) == ["default-deny", "tasky"] and
+       all(.items[].spec.egress[]?; (.to // []) | length > 0 and all(.[]; .ipBlock == null or .ipBlock.cidr == "10.84.2.36/32"))' \
+    <<< "$policies" >/dev/null || exit 113
+printf 'pod %s %s\nbefore %s\nafter %s\nphase outpost\napi egress closed\n' "$pod" "$uid" "$before" "$after"

@@ -84,10 +84,11 @@ CHECKS = {
     17: 'auth: access review did not cleanly deny wiz-evidence configmaps', 18: 'auth: wiz-evidence configmap write was allowed',
     19: 'auth: wiz-evidence write failed for a reason other than RBAC',
     # platform.sh
+    20: 'platform: web API egress transition policy still present in the Outpost phase',
     21: 'platform: namespaces apply failed', 22: 'platform: platform resources apply failed',
     23: 'platform: namespace, web service account or marker missing', 24: 'platform: web phase record unreadable',
     25: 'platform: cluster-admin binding present without a baseline phase record', 26: 'platform: web phase record create failed',
-    28: 'platform: web phase advance failed',
+    27: 'platform: baseline web API egress transition policy apply failed', 28: 'platform: web phase advance failed',
     29: 'platform: cluster-admin binding present in the Outpost phase', 30: 'platform: unknown web phase',
     # traefik.sh
     31: 'traefik: helm install failed', 32: 'traefik: controller rollout not ready',
@@ -116,6 +117,8 @@ CHECKS = {
     107: 'outpost: binding still present after delete', 108: 'outpost: web identity still allowed after revocation',
     109: 'outpost: observed pod was replaced during the transition', 110: 'outpost: web phase advance failed',
     111: 'outpost: cluster-admin binding present in the Outpost phase',
+    112: 'outpost: closing the web API egress (hardened network policy) failed',
+    113: 'outpost: a wiz-web network policy still allows egress beyond MongoDB',
 }
 # Azure role assignments can take minutes to reach the cluster: retry only these release checks.
 RELEASE_RETRYABLE = {14, 15}
@@ -239,7 +242,7 @@ def scan(work, files, registries):
 
 def setup(work):
     reader_id = checked(arm('identity', 'show', '-g', 'takehome-rg', '-n', 'id-backup-reader', '--query', 'clientId'), UUID, 'reader client ID')
-    names = ('namespaces', 'identities', 'marker', 'network', 'bindings', 'traefik-secret-watch')
+    names = ('namespaces', 'identities', 'marker', 'network', 'bindings', 'traefik-secret-watch', 'web-api-transition')
     for name in names:
         source = (ROOT / f'k8s/platform/{name}.yaml').read_text()
         if name == 'identities':
@@ -310,22 +313,28 @@ def reader(work):
     fixed(work, 'bash reader.sh verify 2>/dev/null', ['reader.sh'], 'backup verified privately', timeout=240)
 
 
-OUTPOST_EVIDENCE = re.compile(r'pod (web-[a-z0-9]+-[a-z0-9]+) (' + UUID + r')\nbefore (allowed|denied|absent)\n'
-                              r'after (denied|absent)\nphase outpost')
+OUTPOST_EVIDENCE = re.compile(r'pod (web-[a-z0-9]+-[a-z0-9]+) (' + UUID + r')\nbefore (allowed|denied|absent|unreachable)\n'
+                              r'after (denied|absent|unreachable)\nphase outpost\napi egress closed')
 
 
 def outpost(work):
     """Revoke the web identity's cluster-admin binding and prove it on one running pod."""
     copy(SCRIPTS / 'outpost.sh', work / 'outpost.sh')
-    request, logs = invoke(work, 'bash outpost.sh 2>/dev/null', ['outpost.sh'], timeout=390)
+    # The hardened policy (no web route to the API) is applied only after the proof.
+    copy(ROOT / 'k8s/platform/network.yaml', work / 'network.yaml')
+    scan(work, {'platform/network.yaml': work / 'network.yaml'}, [])
+    request, logs = invoke(work, 'bash outpost.sh 2>/dev/null', ['outpost.sh', 'network.yaml'], timeout=390)
     evidence = OUTPOST_EVIDENCE.fullmatch(logs)
     require(evidence, 'Incomplete web identity evidence')
     pod, uid, before, after = evidence.groups()
-    # A token-bearing pod answers allowed/denied; a token-free pod is absent both times.
-    require((before == 'absent') == (after == 'absent'), 'Inconsistent web identity evidence')
+    # A token-bearing pod answers allowed/denied; a token-free pod is absent both times;
+    # a rerun after the route was closed gets no answer (unreachable) both times.
+    for state in ('absent', 'unreachable'):
+        require((before == state) == (after == state), 'Inconsistent web identity evidence')
     record(f'Web identity transition · AKS request `{request}`')
     record(f'Pod `{pod}` (`{uid}`): before revocation `{before}`, after revocation `{after}` on the same pod')
     record('cluster-admin binding wiz-web-baseline absent · phase outpost')
+    record('Web pods have no route to the Kubernetes API (egress limited to MongoDB and DNS)')
 
 
 def release():

@@ -1,0 +1,17 @@
+# Baseline phase only. The panel marker check (a SelfSubjectAccessReview from the
+# web pod's own token) needs the Kubernetes service / private API on 443 until the
+# Outpost revocation is proved on the same pod. platform.sh applies this only while
+# the web phase is `baseline`; outpost.sh deletes it right after the proof, and a
+# later setup run in the Outpost phase deletes it again if it ever reappears.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tasky-api-transition
+  namespace: wiz-web
+  labels: {app.kubernetes.io/part-of: outpost}
+spec:
+  podSelector: {matchLabels: {app: web}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{ipBlock: {cidr: 10.86.0.1/32}}, {ipBlock: {cidr: 10.84.2.0/27}}]
+      ports: [{protocol: TCP, port: 443}]
