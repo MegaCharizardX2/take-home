@@ -1,0 +1,35 @@
+name: Pipeline 1 - commission MongoDB
+on:
+  workflow_dispatch:
+
+permissions: {}
+concurrency:
+  group: outpost-infra
+  cancel-in-progress: false
+
+jobs:
+  commission:
+    if: github.repository == 'MegaCharizardX2/take-home' && github.ref == 'refs/heads/main'
+    environment: infra
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Sign in as takehome-id
+        run: bash infra/pipeline/azure-login.sh
+      - name: Create the MongoDB users and run the first backup
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+        run: bash infra/pipeline/commission-mongo.sh
+      - name: Remove private runner files
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/outpost-azure" "$RUNNER_TEMP"/outpost-commission.*
