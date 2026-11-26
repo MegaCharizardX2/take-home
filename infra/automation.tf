@@ -57,7 +57,7 @@ resource "azurerm_automation_schedule" "power" {
   interval                = 1
   timezone                = "Asia/Jerusalem"
   start_time              = timecmp(each.value, local.schedule_after) > 0 ? each.value : timeadd(each.value, "24h")
-  expiry_time             = "2026-12-08T00:05:00+02:00"
+  expiry_time             = "${local.tags.expires}T00:05:00+02:00"
   lifecycle { ignore_changes = [start_time] }
 }
 

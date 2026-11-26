@@ -57,7 +57,10 @@ resource "azurerm_linux_virtual_machine" "mongo" {
   # No boot_diagnostics: that also disables the serial console, an access path the
   # lab does not need (Run Command is the only administration path). Checkov CKV2_AZURE_39.
   tags = local.tags
-  lifecycle { ignore_changes = [tags["lab-keep-running"]] }
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [tags["lab-keep-running"]]
+  }
   depends_on = [
     azurerm_network_interface_security_group_association.mongo,
     azurerm_subnet_network_security_group_association.lab,
@@ -92,6 +95,7 @@ resource "azurerm_managed_disk" "data" {
   public_network_access_enabled = false
   disk_encryption_set_id        = azurerm_disk_encryption_set.mongo.id
   tags                          = local.tags
+  lifecycle { prevent_destroy = true }
 }
 
 resource "azurerm_virtual_machine_data_disk_attachment" "data" {
@@ -113,7 +117,7 @@ resource "azurerm_virtual_machine_extension" "mongo" {
   settings = jsonencode({
     script = base64gzip(join("\n", concat(
       ["#!/bin/bash", "set -euo pipefail", "umask 077", "install -d -m 0700 /etc/outpost"],
-      [for name in ["install.sh", "backup.sh", "bootstrap-users.js", "commission.sh"] :
+      [for name in ["install.sh", "cve-mitigations.sh", "backup.sh", "bootstrap-users.js", "commission.sh"] :
         "base64 -d > /etc/outpost/${name} <<'GUEST_FILE'\n${filebase64("${path.module}/mongo/${name}")}\nGUEST_FILE"
       ],
       [

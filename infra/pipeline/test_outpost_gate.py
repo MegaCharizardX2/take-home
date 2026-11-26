@@ -1,5 +1,8 @@
 """Outpost-stage plan gate: one-way stage, retired exceptions and the remediated-state contract."""
+import contextlib
 import copy
+import io
+import ipaddress
 import json
 from pathlib import Path
 import unittest
@@ -13,20 +16,26 @@ ACTOR = "azurerm_container_registry.images"
 RG = f"/subscriptions/{SUB}/resourceGroups/takehome-rg"
 ACCOUNT = RG + "/providers/Microsoft.Storage/storageAccounts/stoutpost123456789a"
 CMK_ID = RG + "/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-backup-cmk"
+CMK_URI = "https://kv-outpost-123456789a.vault.azure.net/keys/backup-cmk"
 # A synthetic, globally routable home address (the gate rejects documentation ranges).
-HOME = "1.2.3.4/32"
+HOME = f"{ipaddress.IPv4Address(0x0B000001)}/32"
+NAT_IP = str(ipaddress.IPv4Address(0x0B000002))
 
 
 def outpost_resources():
     """Planned values for the remediated resources, shaped like `terraform show -json`."""
     return {
         ACTOR: {"sku": "Basic"},
+        "azurerm_key_vault_key.backup": {"versionless_id": CMK_URI},
+        'data.azurerm_user_assigned_identity.lab["id-backup-cmk"]': {"name": "id-backup-cmk", "id": CMK_ID},
+        'data.azurerm_user_assigned_identity.lab["id-mongo"]': {"name": "id-mongo", "principal_id": "test-writer"},
         "azurerm_storage_account.backup": {
             "id": ACCOUNT, "public_network_access_enabled": False, "allow_nested_items_to_be_public": False,
             "shared_access_key_enabled": False, "identity": [{"type": "UserAssigned", "identity_ids": [CMK_ID]}],
-            "customer_managed_key": [{"key_vault_key_id": "https://kv-outpost-123456789a.vault.azure.net/keys/backup-cmk",
+            "customer_managed_key": [{"key_vault_key_id": CMK_URI,
                                       "user_assigned_identity_id": CMK_ID}]},
-        "azurerm_storage_container.backups": {"container_access_type": "private"},
+        "azurerm_storage_container.backups": {"container_access_type": "private",
+                                               "id": ACCOUNT + "/blobServices/default/containers/backups"},
         'azurerm_private_endpoint.lab["blob"]': {"name": "pe-outpost-blob"},
         "azurerm_network_interface.mongo": {"ip_configuration": [{"name": "mongo", "public_ip_address_id": None}]},
         "azurerm_public_ip.ingress": {"name": "pip-ingress"},
@@ -34,17 +43,19 @@ def outpost_resources():
         'azurerm_network_security_rule.mongo["ssh-deny"]': {
             "name": "mongo-ssh-deny", "network_security_group_name": "nsg-mongo", "access": "Deny",
             "direction": "Inbound", "destination_port_range": "22"},
-        'azurerm_role_assignment.lab["vm_writer"]': {"role_definition_name": "Lab Backup Writer",
+        'azurerm_role_assignment.lab["vm_writer"]': {"principal_id": "test-writer", "role_definition_name": "Lab Backup Writer",
                                                      "scope": ACCOUNT + "/blobServices/default/containers/backups"},
-        "azapi_resource.aks": {"body": {"properties": {"apiServerAccessProfile": {
+        "azapi_resource.aks": {"type": "Microsoft.ContainerService/managedClusters@2025-10-01", "body": {"properties": {"apiServerAccessProfile": {
             "enableVnetIntegration": True, "enablePrivateCluster": False, "authorizedIPRanges": [HOME]}}}},
     }
 
 
-def plan_of(resources, stage="outpost", changes=()):
-    return {"variables": {"backup_stage": {"value": stage}}, "resource_changes": list(changes),
+def plan_of(resources, stage="outpost", changes=(), step="B", nat=False):
+    return {"variables": {"backup_stage": {"value": stage}, "storage_step": {"value": step},
+                          "allow_nat_api": {"value": nat}, "aks_api_home_cidr": {"value": HOME}}, "resource_changes": list(changes),
             "planned_values": {"root_module": {"resources": [
-                {"address": a, "mode": "managed", "values": v} for a, v in resources.items()]}}}
+                {"address": a, "mode": "data" if a.startswith("data.") else "managed",
+                 "type": a.removeprefix("data.").split(".")[0], "values": v} for a, v in resources.items()]}}}
 
 
 def report_of(address=ACTOR, check="CKV_AZURE_139", count=1):
@@ -70,7 +81,7 @@ class OutpostGateTests(unittest.TestCase):
                               ("CKV2_AZURE_1", "azurerm_storage_account.backup")):
             with self.subTest(rule=rule), self.assertRaisesRegex(ValueError, "Unapproved"):
                 self.verify(plan_of(outpost_resources()), report_of(address, rule))
-        trivy = (ROOT / ".trivyignore.yaml").read_text()
+        trivy = (ROOT / "policy" / ".trivyignore.yaml").read_text()
         self.assertNotIn("KSV-0036", trivy)
         self.assertNotIn("KSV-0111", trivy)
         for path in ("storage.tf", "mongo.tf"):
@@ -98,6 +109,8 @@ class OutpostGateTests(unittest.TestCase):
             return self.verify(plan_of(resources, changes=changes), report_of(nsg, check, 3))
         # Outpost's own plan: the refresh still lists the Internet SSH rule it deletes.
         self.assertEqual(scan(["mongo-aks", "Internet-to-mongo-ssh"], changes=[deleted]), 1)
+        with self.assertRaisesRegex(ValueError, "Unapproved"):
+            scan(["Internet-to-mongo-ssh"], check="CKV_AZURE_9", changes=[deleted])
         for inline, changes in ((["mongo-aks", "Internet-to-mongo-ssh"], ()),
                                 (["mongo-aks", "Internet-to-mongo-ssh", "rogue-rdp"], [deleted]),
                                 ([], [deleted])):
@@ -142,6 +155,13 @@ class OutpostGateTests(unittest.TestCase):
             "shared key": lambda r: r[account].update(shared_access_key_enabled=True),
             "no cmk": lambda r: r[account].update(customer_managed_key=[]),
             "other key": lambda r: r[account]["customer_managed_key"][0].update(key_vault_key_id="https://kv/keys/other"),
+            "same key name in another vault": lambda r: r[account]["customer_managed_key"][0].update(
+                key_vault_key_id=CMK_URI.replace("kv-outpost-", "other-")),
+            "same identity name in another group": lambda r: r[account]["customer_managed_key"][0].update(
+                user_assigned_identity_id=CMK_ID.replace("takehome-rg", "other-rg")),
+            "detached CMK identity": lambda r: r[account]["identity"][0].update(identity_ids=[]),
+            "unknown key ID": lambda r: r["azurerm_key_vault_key.backup"].clear(),
+            "unknown container scope": lambda r: r[plan_gate.CONTAINER].pop("id"),
             "other identity": lambda r: r[account]["customer_managed_key"][0].update(user_assigned_identity_id=RG + "/x/id-mongo"),
             "no private endpoint": lambda r: r.pop('azurerm_private_endpoint.lab["blob"]'),
             "public container": lambda r: r["azurerm_storage_container.backups"].update(container_access_type="container"),
@@ -162,7 +182,7 @@ class OutpostGateTests(unittest.TestCase):
             "exemption kept": lambda r: r.update({"azurerm_resource_policy_exemption.backup[0]": {"name": "wiz-public-backup-baseline"}}),
             "open api": profile(authorizedIPRanges=[]),
             "missing ranges": profile(authorizedIPRanges=None),
-            "two ranges": profile(authorizedIPRanges=[HOME, "5.6.7.8/32"]),
+            "two ranges": profile(authorizedIPRanges=[HOME, NAT_IP + "/32"]),
             "wide range": profile(authorizedIPRanges=["1.2.3.0/24"]),
             "private range": profile(authorizedIPRanges=["10.84.0.4/32"]),
             "documentation range": profile(authorizedIPRanges=["198.51.100.7/32"]),
@@ -179,6 +199,78 @@ class OutpostGateTests(unittest.TestCase):
         resources[aks]["body"] = json.dumps(resources[aks]["body"])
         self.assertEqual(self.verify(plan_of(resources)), 1)
         self.assertEqual(self.verify(plan_of({ACTOR: {"sku": "Basic"}})), 1)
+
+    def test_only_reviewed_deletes_and_no_replacements(self):
+        def change(address, actions):
+            return {"address": address, "type": address.split(".")[0],
+                    "change": {"actions": actions, "before": {"name": "secret fixture value"}}}
+        changes = [change(address, ["delete"]) for address in sorted(plan_gate.DELETES)]
+        for address, actions in (("azurerm_linux_virtual_machine.mongo", ["delete"]),
+                                 ("azurerm_public_ip.mongo", ["create", "delete"]),
+                                 ("azurerm_public_ip.mongo", ["delete", "create"]),
+                                 ("azurerm_public_ip.mongo", ["forget"])):
+            with self.subTest(actions=actions), self.assertRaisesRegex(ValueError, "Refusing"):
+                self.verify(plan_of(outpost_resources(), changes=[change(address, actions)]))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(self.verify(plan_of(outpost_resources(), changes=changes)), 1)
+        self.assertEqual(output.getvalue().splitlines(), [f'{c["address"]} delete' for c in changes])
+
+    def test_only_initial_step_a_can_leave_the_cmk_absent(self):
+        resources = outpost_resources()
+        resources[plan_gate.ACCOUNT]["customer_managed_key"] = []
+        before = {"public_network_access_enabled": True, "customer_managed_key": []}
+        change = {"address": plan_gate.ACCOUNT, "type": "azurerm_storage_account",
+                  "change": {"actions": ["update"], "before": before, "after": resources[plan_gate.ACCOUNT]}}
+        initial = plan_of(resources, step="A", changes=[change])
+        self.assertEqual(self.verify(initial), 1)
+        self.assertEqual(self.verify(initial, report_of(plan_gate.ACCOUNT, "CKV2_AZURE_1")), 1)
+        for plan, address, check in ((initial, ACTOR, "CKV2_AZURE_1"),
+                                     (initial, plan_gate.ACCOUNT, "CKV_AZURE_59"),
+                                     (plan_of(outpost_resources()), plan_gate.ACCOUNT, "CKV2_AZURE_1")):
+            with self.subTest(address=address, check=check), self.assertRaisesRegex(ValueError, "Unapproved"):
+                self.verify(plan, report_of(address, check))
+        with self.assertRaisesRegex(ValueError, "skip"):
+            self.verify(plan_of(outpost_resources(), step="B", changes=[change]))
+        for step, fields in (("B", {}), ("A", {"public_network_access_enabled": False}),
+                             ("A", {"customer_managed_key": [{"key_vault_key_id": "old"}]})):
+            bad = copy.deepcopy(change)
+            bad["change"]["before"].update(fields)
+            with self.subTest(step=step, fields=fields), self.assertRaisesRegex(ValueError, "Refusing"):
+                self.verify(plan_of(resources, step=step, changes=[bad]))
+
+    def test_nat_fallback_requires_the_live_address_and_exact_home(self):
+        resources = outpost_resources()
+        nat = NAT_IP
+        resources[plan_gate.NAT]["ip_address"] = nat
+        change = {"address": plan_gate.NAT, "type": "azurerm_public_ip",
+                  "change": {"actions": ["no-op"], "before": {"name": "pip-nat", "ip_address": nat}}}
+        profile = resources[plan_gate.AKS]["body"]["properties"]["apiServerAccessProfile"]
+        profile["authorizedIPRanges"] = [nat + "/32", HOME]
+        self.assertEqual(self.verify(plan_of(resources, changes=[change], nat=True)), 1)
+        for ranges, enabled, changes in (([HOME, nat + "/32"], False, [change]),
+                                         ([HOME, nat + "/32"], True, []),
+                                         ([HOME, nat + "/32", HOME], True, [change]),
+                                         ([nat + "/32"], False, [change])):
+            profile["authorizedIPRanges"] = ranges
+            with self.subTest(ranges=ranges), self.assertRaisesRegex(ValueError, "Refusing"):
+                self.verify(plan_of(resources, changes=changes, nat=enabled))
+
+    def test_roles_and_azapi_are_allowlisted_even_inside_child_modules(self):
+        for fields in ({"principal_id": "unknown"}, {"scope": None}, {"scope": ACCOUNT},
+                       {"role_definition_name": "Owner"}, {"role_definition_name": None, "role_definition_id": "private"}):
+            resources = outpost_resources()
+            resources['azurerm_role_assignment.lab["vm_writer"]'].update(fields)
+            with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, "Refusing"):
+                self.verify(plan_of(resources))
+        for address, kind in (("module.extra.azapi_resource.aks", "azapi_resource"),
+                              ("module.extra.azapi_update_resource.extra", "azapi_update_resource"),
+                              ("module.extra.azurerm_role_assignment.extra", "azurerm_role_assignment")):
+            plan = plan_of(outpost_resources())
+            plan["planned_values"]["root_module"]["child_modules"] = [
+                {"resources": [{"address": address, "type": kind, "mode": "managed", "values": {}}]}]
+            with self.subTest(address=address), self.assertRaisesRegex(ValueError, "Refusing"):
+                self.verify(plan)
 
     def test_refusals_never_echo_plan_values(self):
         resources = outpost_resources()

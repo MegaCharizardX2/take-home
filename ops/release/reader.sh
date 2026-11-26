@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Each check exits with its own code (81-86); cluster.py maps it to a fixed label.
+# Each check exits with its own code (81-87); cluster.py maps it to a fixed label.
 set -euo pipefail
 case $1 in
     image)
@@ -12,12 +12,14 @@ case $1 in
         echo 'reader ready'
         ;;
     verify)
-        # A fresh one-shot run in the reader pod: workload-identity token, list the
-        # container, fetch the newest completed backup and match its SHA-256. The
-        # reader refuses any Blob address outside the private-endpoint subnet, so
-        # success also proves the path never left the VNet. Its listing stays private.
-        kubectl -n wiz-evidence exec deployment/backup-reader -c reader -- /app/backup-reader >/dev/null 2>&1 || exit 86
-        echo 'backup verified privately'
+        # Only the fixed reader summary can leave the Run Command pod.
+        output=$(kubectl -n wiz-evidence exec deployment/backup-reader -c reader -- /app/backup-reader 2>/dev/null | head -c 256 && printf '.') || exit 86
+        (( ${#output} <= 256 )) || exit 87
+        output=${output%$'\n.'}
+        uuid='[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+        pattern="^objects ([1-9][0-9]{0,8}) newest ([0-9]{8}T[0-9]{6}Z-${uuid}/dump[.]archive[.]gz) sha256 ([0-9a-f]{64}) endpoint (10[.]84[.]2[.](6[4-9]|[78][0-9]|9[0-5]))$"
+        [[ $output =~ $pattern ]] || exit 87
+        printf '%s\n' "$output"
         ;;
     *) exit 85 ;;
 esac

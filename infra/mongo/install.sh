@@ -37,14 +37,6 @@ fi
 mountpoint -q /srv/mongodb || mount /srv/mongodb
 [[ $(findmnt -n -o UUID --mountpoint /srv/mongodb) == "$uuid" ]]
 
-# The panel uses key-only SSH. Enforce the effective daemon settings as well.
-if ! sshd -T | grep -Fx 'permitrootlogin no' >/dev/null; then
-    sed -i '1iPermitRootLogin no' /etc/ssh/sshd_config
-fi
-sshd -t
-sshd -T | grep -Fx 'passwordauthentication no' >/dev/null
-systemctl reload ssh
-
 apt-get -o Acquire::Retries=3 update -qq
 apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends curl jq openssl ca-certificates libcurl4 libssl1.1
 work=$(mktemp -d)
@@ -121,7 +113,8 @@ WantedBy=timers.target
 UNIT
 chmod 0644 /etc/systemd/system/mongod.service /etc/systemd/system/mongo-backup.{service,timer}
 systemctl daemon-reload
+# Install the kernel block and compressor drop-in before the first mongod start.
+bash /etc/outpost/cve-mitigations.sh install
 systemctl enable mongod.service
-systemctl restart mongod.service
 # The protected user-bootstrap step commissions the backup and starts the timer.
 systemctl is-active --quiet mongod.service

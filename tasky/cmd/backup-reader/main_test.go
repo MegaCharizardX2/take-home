@@ -69,7 +69,7 @@ func TestVerifiedArchive(t *testing.T) {
 	if err = client.verify(context.Background(), dir, &result); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(result.String(), content) || !strings.Contains(result.String(), fmt.Sprintf("%x", sha256.Sum256([]byte(content)))) {
+	if want := fmt.Sprintf("objects 2 newest %s/%s sha256 %x endpoint 127.0.0.1\n", run, archiveName, sha256.Sum256([]byte(content))); result.String() != want {
 		t.Fatal("unexpected evidence")
 	}
 	corrupt = true

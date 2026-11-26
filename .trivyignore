@@ -1,4 +1,4 @@
-# The expiring exceptions are attached to their individual Terraform resources.
+# Run bash infra/pipeline/scan-iac.sh to scan with the reviewed, expiring exceptions.
 # AZU-0047 — the PDF requires public web ingress through Traefik on 80 (HTTP-01 and redirects) and 443 (public-access.tf).
 # Outpost retired AZU-0050, AZU-0076 (public SSH and the VM public IP), AZU-0012, AZU-0007 (public backups)
 # and AZU-0060 (backup CMK).

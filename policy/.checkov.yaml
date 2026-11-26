@@ -1,7 +1,7 @@
 # Outpost retired every PDF-required Phase-1 exception (public SSH and VM IP, public
 # backups, backup CMK). Each remaining entry is a budget choice, a feature the PDF
 # requires, or a rule that only a weaker setting could satisfy. Retire all by lab
-# teardown on 2026-12-08. The saved-plan gate reads the exact resource address in brackets.
+# teardown (infra/lab-expiry.txt). The saved-plan gate reads the exact resource address in brackets.
 # CKV_GHA_7 is scoped inline to Pipeline 1: its two allowlisted dispatch inputs select required build stages.
 skip-check:
   - 'CKV_AZURE_160:public-access\.tf$'  # [azurerm_network_security_rule.ingress] Traefik needs port 80 for Let's Encrypt HTTP-01 and HTTPS redirects; Tasky is served on 443.

@@ -5,7 +5,7 @@
 # after the cluster-admin binding is deleted. Expected first run: allowed -> denied
 # on the same pod UID. After the proof the web pods also lose their API route.
 # Reruns are safe and report the current decision.
-# Each check exits with its own code (101-113); cluster.py maps it to a fixed label.
+# Each check exits with its own code (101-116); cluster.py maps it to a fixed label.
 set -euo pipefail
 k=(kubectl -n wiz-web)
 
@@ -45,8 +45,12 @@ observe() {
     fi
 }
 
+# Exercise the jq features needed below before the irreversible binding removal.
+jq -ne 'all([true][]; .)' >/dev/null 2>&1 || exit 114
 before=$(observe) || exit 105
+printf 'pod %s %s\nbefore %s\n' "$pod" "$uid" "$before"
 if [[ -n $binding ]]; then
+    [[ $before == allowed ]] || exit 105
     kubectl delete clusterrolebinding wiz-web-baseline --ignore-not-found >/dev/null || exit 106
 fi
 remaining=$(kubectl get clusterrolebinding wiz-web-baseline --ignore-not-found -o name) || exit 103
@@ -62,10 +66,15 @@ done
 # The proof only counts if the same pod answered both times.
 now=$("${k[@]}" get pod "$pod" -o jsonpath='{.metadata.uid}{"|"}{.metadata.deletionTimestamp}') || exit 109
 [[ $now == "$uid|" ]] || exit 109
+printf 'after %s\n' "$after"
 if [[ $phase == baseline ]]; then
     kubectl -n wiz-evidence patch configmap outpost-web-phase --type=json \
         -p='[{"op":"test","path":"/data/phase","value":"baseline"},{"op":"replace","path":"/data/phase","value":"outpost"}]' >/dev/null || exit 110
 fi
+# Rotate the old token-bearing pods while their API route is still available.
+# Otherwise the release guard could never distinguish denial from a broken exec.
+"${k[@]}" patch deployment web --type=merge -p '{"spec":{"template":{"spec":{"automountServiceAccountToken":false}}}}' >/dev/null || exit 115
+"${k[@]}" rollout status deployment/web --timeout=300s >/dev/null || exit 116
 # Only now, with the proof recorded: no token AND no route. Apply the hardened
 # network.yaml (no API egress for web) and drop the baseline-only transition policy.
 kubectl apply --server-side --field-manager=outpost-infra -f network.yaml >/dev/null || exit 112
@@ -75,4 +84,4 @@ policies=$("${k[@]}" get networkpolicy -o json) || exit 113
 jq -e '([.items[].metadata.name] | sort) == ["default-deny", "tasky"] and
        all(.items[].spec.egress[]?; (.to // []) | length > 0 and all(.[]; .ipBlock == null or .ipBlock.cidr == "10.84.2.36/32"))' \
     <<< "$policies" >/dev/null || exit 113
-printf 'pod %s %s\nbefore %s\nafter %s\nphase outpost\napi egress closed\n' "$pod" "$uid" "$before" "$after"
+printf 'phase outpost\napi egress closed\n'

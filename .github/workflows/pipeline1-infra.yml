@@ -10,7 +10,7 @@ on:
         default: outpost
         options: [outpost]
       target:
-        description: Optional first-build target (full applies the baseline)
+        description: Use full on the live lab. Partial targets maintain already-seeded non-live states.
         type: choice
         required: false
         default: full
@@ -36,6 +36,7 @@ jobs:
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "0"
+      TF_VAR_allow_nat_api: ${{ vars.AKS_API_ALLOW_NAT || 'false' }}
       BACKUP_STAGE: ${{ inputs.backup_stage }}
       TARGET: ${{ inputs.target || 'full' }}
     steps:
@@ -58,9 +59,8 @@ jobs:
             "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Initialize the Entra state backend
         run: terraform -chdir=infra init -input=false -lockfile=readonly -no-color
-      # The closed vault and its Crypto Officer grant must exist before any
-      # runner can enter the firewall or create keys. This plan uses ARM only.
-      - name: Bootstrap the closed vault and key administrator
+      # The non-live maintenance target checks the existing vault and grant before key access.
+      - name: Reconcile the seeded vault and key administrator
         if: inputs.target == 'vault-and-keys'
         env:
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
@@ -80,9 +80,18 @@ jobs:
         with:
           vault: ${{ steps.vault.outputs.name }}
       - name: Verify power state and the backup CMK prerequisites
+        id: preflight
         if: inputs.target == 'full' || inputs.target == ''
         run: bash infra/pipeline/backup-preflight.sh "$BACKUP_STAGE"
-      - name: Plan, scan the JSON, apply the same private plan
+      - name: Step A - make existing public storage private
+        if: steps.preflight.outputs.private_first == 'true'
+        env:
+          TF_VAR_storage_step: A
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+          TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+          TF_VAR_aks_api_home_cidr: ${{ secrets.AKS_API_HOME_CIDR }}
+        run: bash infra/pipeline/plan-apply.sh full "$BACKUP_STAGE"
+      - name: Plan, scan and apply with the backup CMK required
         env:
           TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
           TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}

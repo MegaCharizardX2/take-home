@@ -65,16 +65,7 @@ jobs:
           python3 -m unittest discover -s infra/pipeline -v
           node --test infra/actions/vault-access/firewall.test.cjs
       - name: Scan Terraform, Kubernetes and Dockerfile
-        run: |
-          for dir in infra k8s tasky; do
-            [[ -d "$dir" ]] || { echo "No $dir directory yet"; continue; }
-            case "$dir" in
-              tasky) frameworks=(dockerfile) ;;
-              *) frameworks=(terraform kubernetes) ;;
-            esac
-            docker run --rm -v "$PWD:/src:ro" -w /src bridgecrew/checkov@sha256:89a4c477508225cdc3ed8a23d15c7e0d9d3029bc8ae192b7f113a6ff5f210c94 -d "$dir" --framework "${frameworks[@]}"
-            docker run --rm -v "$PWD:/src:ro" -w /src "$TRIVY" config --exit-code 1 --severity UNKNOWN,HIGH,CRITICAL "$dir"
-          done
+        run: bash infra/pipeline/scan-iac.sh
 
   image-scan:
     runs-on: ubuntu-latest

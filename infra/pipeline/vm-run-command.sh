@@ -6,7 +6,7 @@
 #   backup             run the daily backup service once (write-only role, private endpoint)
 # The reviewed guest script travels inside a mode-0600 request body with its
 # SHA-256, never on argv. Only the execution state, exit code and a fixed label
-# are printed; the guest's output is never read. The uniquely named Run Command
+# and validated summary fields are printed. The uniquely named Run Command
 # resource is always deleted so Azure keeps no copy.
 set +x
 set -euo pipefail
@@ -19,8 +19,9 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 case "$mode" in
     cve-apply) guest=cve-mitigations.sh arg=apply ;;
     cve-verify | cve-reboot-verify) guest=cve-mitigations.sh arg=verify ;;
+    inspect) guest=cve-mitigations.sh arg=inspect ;;
     backup) guest=backup-now.sh arg=run ;;
-    *) echo 'Usage: vm-run-command.sh cve-apply|cve-verify|cve-reboot-verify|backup' >&2; exit 2 ;;
+    *) echo 'Usage: vm-run-command.sh cve-apply|cve-verify|cve-reboot-verify|inspect|backup' >&2; exit 2 ;;
 esac
 payload="$here/../mongo/$guest"
 run_id=${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}
@@ -31,8 +32,8 @@ label() {
     case $1 in
         0) echo 'ok' ;;
         10) echo 'guest: not root or unknown mode' ;;
-        11) echo 'guest: OS is no longer Ubuntu 20.04 (versions must stay unchanged)' ;;
-        12) echo 'guest: MongoDB is no longer 6.0.26 (versions must stay unchanged)' ;;
+        11) echo 'guest: could not identify the OS release' ;;
+        12) echo 'guest: could not identify the MongoDB version' ;;
         20) echo 'kernel: module list for the running kernel unreadable' ;;
         21) echo 'kernel: algif_aead is built into the kernel; a modprobe rule cannot block it' ;;
         22) echo 'kernel: could not install the modprobe block rule' ;;
@@ -49,6 +50,9 @@ label() {
         36) echo 'mongod: service not active' ;;
         37) echo 'mongod: running process still allows zlib' ;;
         40) echo 'backup: the backup service failed (writer role, private endpoint or HTTP 201 check)' ;;
+        41) echo 'sshd: could not disable and stop ssh' ;;
+        42) echo 'sshd: could not verify service state' ;;
+        43) echo 'inspect: could not read listening ports' ;;
         90) echo 'wrapper: guest payload missing or checksum mismatch' ;;
         *) echo 'unlabelled exit code' ;;
     esac
@@ -119,13 +123,18 @@ rm -f -- "$private/body.json" "$private/script.sh"
 
 state=""
 view="{}"
+fields="state: properties.instanceView.executionState, code: properties.instanceView.exitCode"
+if [[ $mode != backup ]]; then
+    fields+=", output: properties.instanceView.output"
+fi
 for _ in $(seq 1 90); do
     sleep 10
     view=$(az rest --method get --url "$url&\$expand=instanceView" --only-show-errors \
-        --query "{state: properties.instanceView.executionState, code: properties.instanceView.exitCode}" -o json 2>/dev/null) || continue
+        --query "{$fields}" -o json 2>/dev/null) || continue
     state=$(jq -r '.state // ""' <<<"$view")
     case "$state" in Succeeded|Failed|TimedOut|Canceled) break ;; esac
 done
+case "$state" in Succeeded|Failed|TimedOut|Canceled) ;; *) state=unknown ;; esac
 code=$(jq -r 'if (.code | type) == "number" then .code else "unknown" end' <<<"$view")
 label=$(label "$code")
 echo "VM Run Command $mode: state=${state:-unknown} exitCode=$code ($label)"
@@ -133,8 +142,19 @@ echo "VM Run Command $mode: state=${state:-unknown} exitCode=$code ($label)"
     echo 'The guest step failed. Inspect privately on the VM (journalctl -t outpost-cve, /var/log/azure/run-command-handler).' >&2
     exit 1
 }
-case "$mode" in
-    cve-apply) echo 'Both CVE mitigations applied and verified: zlib off in the running mongod, algif_aead blocked.' ;;
-    cve-verify | cve-reboot-verify) echo 'Both CVE mitigations verified: zlib off in the running mongod, algif_aead blocked.' ;;
-    backup) echo 'The backup service uploaded a new backup through the private endpoint.' ;;
-esac
+# Validate the entire field (including control characters) before passing any
+# remote text to the shell. The handler may include one final line ending.
+if [[ $mode == backup ]]; then
+    echo 'The backup service uploaded a new backup through the private endpoint.'
+elif [[ $mode == inspect ]]; then
+    jq -er '
+        .output | capture("\\A(?<os>[a-z][a-z0-9_-]{0,31}) (?<version>[0-9]{1,4}(?:\\.[0-9]{1,4}){0,2}) (?<db>[0-9]{1,3}(?:\\.[0-9]{1,3}){2}) (?<boot>enabled|disabled|masked|static) (?<active>active|inactive|failed|activating|deactivating) (?<ports>none|(?:tcp|udp)/[1-9][0-9]{0,4}(?:,(?:tcp|udp)/[1-9][0-9]{0,4})*)\\r?\\n?\\z")
+        | select(.ports == "none" or (.ports | split(",") | all(.[]; split("/")[1] | tonumber <= 65535)))
+        | "OS=\(.os) \(.version) MongoDB=\(.db) sshd=\(.boot)/\(.active) listening_ports=\(.ports)"
+    ' <<<"$view" 2>/dev/null || { echo 'Invalid VM inspect summary.' >&2; exit 1; }
+else
+    jq -er '
+        .output | capture("\\Akernel=(?<kernel>verified|not-applicable) mongo=(?<mongo>verified|not-applicable)\\r?\\n?\\z")
+        | "sshd=disabled/inactive CVE-2026-31431=\(.kernel) CVE-2025-14847=\(.mongo)"
+    ' <<<"$view" 2>/dev/null || { echo 'Invalid VM mitigation summary.' >&2; exit 1; }
+fi

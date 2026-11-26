@@ -1,56 +1,34 @@
 # Outpost remediation runbook
 
-This repository's `main` branch describes the **remediated (Outpost) state**. Merging the
-Outpost change starts a one-way transition: Pipeline 1 refuses the Phase-1 `closed`,
-`waiver` and `public` stages (Terraform variable validation, the workflow input list,
-`plan-apply.sh` and `plan_gate.check_stage`). The intentionally weak baseline stays
-reproducible from the commit before the merge.
+Use this runbook when the Owner resumes the lab. The Outpost branch retires the Phase 1 stages. Preserve the baseline screenshots, working release and backup evidence before the transition.
 
-## Before you start
+## Preparation
 
-1. Capture the Phase-1 evidence first. After the merge, no pipeline recreates the
-   weak state.
-2. Set the `infra` environment secret `AKS_API_HOME_CIDR` to the operator's home public
-   IPv4 address as a `/32`. Every Pipeline 1 plan needs it, and Terraform rejects
-   private, reserved, documentation and wider ranges.
-3. Tag the cluster and VM `lab-keep-running=true`, and don't run steps across the
-   nightly stop at 00:00 Israel time.
+* Use reviewed workflows on main with the protected infra or release environment. Keep the cluster and VM running throughout the transition and avoid the nightly stop.
+* Set the infra secret `AKS_API_HOME_CIDR` to the operator's public IPv4 /32. Leave the optional infra variable `AKS_API_ALLOW_NAT` unset or false. Set it to true only if a system client needs the NAT path. The plan gate then also admits the refreshed NAT public IP as a /32.
+* Use **target=full** for every infrastructure run on the live lab. The RBAC moved block carries the existing CMK grant to its new Terraform address. A partial bootstrap target can exclude one end of that move.
+* For a fresh deployment, use a separately reviewed baseline bootstrap to seed the identities and grant scopes in state before Outpost. The gate requires known principal and scope IDs for the vault, both keys, subnets, ingress IP, kubelet identity, cluster, VM, container and registry. The partial workflow targets maintain already-seeded non-live environments.
+* Review the lab deadline in `infra/lab-expiry.txt`. Edit that single ISO date when the Owner confirms a new deadline. The scanner policies, saved-plan exceptions, resource tags and Automation expiry use it. Outpost deletes the baseline exemption. Run `bash infra/pipeline/scan-iac.sh` to check the effective scanner policies.
+* After merge and **before step 1**, run **Pipeline 1 - Outpost VM and evidence** with `step=report`. Save the before table from the job summary. Failed baseline controls are expected. A missing permission or unavailable service also fails its check and needs investigation.
 
 ## Run order
 
-Run every workflow from `main`. Start it as one owner and approve it as the other.
-Each step can be re-run, and each stops with a numbered, labelled failure.
+| Step | Workflow or operator | Evidence to retain |
+|---|---|---|
+| 1 | **Pipeline 1 - Azure infrastructure**, `backup_stage=outpost`, `target=full`. For existing public storage, step A closes public networking and anonymous access using the current service-managed encryption. Step B scans and applies a second saved plan to attach the backup CMK. Private storage goes directly to B on retry. | Verify both stages, the closed container, and the final Key Vault CMK. A successful A alone is partial remediation. Review the planned addresses and actions. Any replacement stops the gate. |
+| 1a | Immediately run **Pipeline 1 cluster setup**, `mode=api-probe`, before further guest or workload work. | One ARM Run Command must list system pods and successfully exec in a running container. Confirm direct access from home separately. If the probe fails, stop and investigate the system path. |
+| 1b | **Owner** removes the Resource Policy Contributor grant for `takehome-id` at its assigned scope after step 1 has deleted the exemption. Check for inherited or overlapping grants. | Allow RBAC propagation. The final report checks whether the pipeline principal can still write an exemption on the backup account. |
+| 2 | **Pipeline 1 - Outpost VM and evidence**, `mitigate-cves`, then `inspect`. | Verify SSH service shutdown, guest OS, database version and listener summary through Run Command. Applicable mitigations disable MongoDB zlib compression and the affected kernel module. |
+| 3 | Same workflow, `reboot-and-verify-cves`, or `verify-cves` after a scheduled restart. | Both applicable mitigations survive restart and SSH remains disabled. Retain any version-specific “not applicable” results. |
+| 4 | Same workflow, `backup-now`, after the container-scoped role change propagates. | The daily backup succeeds over the private endpoint with the restricted VM identity. |
+| 5 | **Pipeline 1 cluster setup**, `mode=outpost`. | Save the allowed and denied decisions for the same pod UID. The workflow records revocation, rotates the web pods off the projected token and closes their API egress. If a later step fails, retain the first run's partial proof. |
+| 6 | **Pipeline 2 release**. | Verify the scanned digest, web-node placement and token-free rollout. An inconclusive credential check on an old token-bearing pod blocks this release. |
+| 7 | **Pipeline 1 cluster setup**, `mode=reader`. | Retain the validated archive count, newest backup name, its SHA-256 and the Blob private endpoint address from the reader. Compare the archive with step 4. |
+| 8 | **Pipeline 1 - Outpost VM and evidence**, `step=report`. | Save the after table beside the before table. Require all ten controls to pass, including customer-managed encryption, denial of anonymous listing, runner-to-API isolation and removal of exemption-write permission. |
 
-| # | Workflow and input | What it does | Success looks like |
-|---|---|---|---|
-| 1 | **Pipeline 1 - Azure infrastructure**, `backup_stage=outpost`, `target=full` | One scanned plan: backup account private-only, anonymous access off, Key Vault CMK `backup-cmk` via `id-backup-cmk`; container private; exemption `wiz-public-backup-baseline` deleted; `id-mongo` gets only **Lab Backup Writer** on the container (VM Contributor and Blob Data Contributor removed); VM public IP and Internet SSH rule removed, TCP 22 denied; AKS API limited to the home `/32` | `Applied the scanned full plan for backup stage outpost.` |
-| 2 | **Pipeline 1 - Outpost VM and evidence**, `mitigate-cves` | Run Command applies both CVE mitigations, versions unchanged: zlib network compression off (CVE-2025-14847) and `algif_aead` blocked (CVE-2026-31431). It restarts `mongod` only when needed, never during a backup | `exitCode=0 (ok)` |
-| 3 | Same workflow, `reboot-and-verify-cves` (or `verify-cves` after the next nightly stop and start) | Proves that both mitigations survive a reboot | `exitCode=0 (ok)` |
-| 4 | Same workflow, `backup-now`, about 10 minutes after step 1 so RBAC can propagate | Runs the daily backup once with the write-only role over the private endpoint (both Put Blob requests must return HTTP 201) | `exitCode=0 (ok)` |
-| 5 | **Pipeline 1 cluster setup**, `mode=outpost` | On one running web pod, its own token is checked before and after `wiz-web-baseline` is deleted. Sets `wiz-evidence/outpost-web-phase` to `outpost`. Only after that proof, it applies the hardened `network.yaml` and deletes `tasky-api-transition`: web pods lose their route to the Kubernetes API, and later `setup` runs keep it closed | `before allowed`, `after denied` on the same pod UID, then `api egress closed` |
-| 6 | **Pipeline 2 release** | Rolls out web with `automountServiceAccountToken: false`. Its deploy guard refuses to run while a web pod is still allowed (that is, before step 5). Verify checks that no token is projected and that the marker check finds no credential | `rollout ready`, `match` |
-| 7 | **Pipeline 1 cluster setup**, `mode=reader` | Rolls out the backup reader, then runs it once: it lists the container and downloads and checksums the newest backup through the private endpoint. It refuses any public Blob address | `backup verified privately` |
-| 8 | **Pipeline 1 - Outpost VM and evidence**, `evidence` | Read-only ARM readback of every control, plus an anonymous list request from the hosted runner | Eight `PASS` lines, with the anonymous request refused |
+## Recovery
 
-Manual proof of the API restriction: `kubectl` works directly from home, and a direct
-attempt from a second network fails at the network layer. `az aks command invoke` keeps
-working from anywhere, because it goes through ARM.
-
-## Failure and rollback
-
-- **Terraform (step 1).** The saved-plan gate refuses any plan that reopens a control:
-  public storage, any policy exemption, a VM public IP, an inbound SSH allow, the
-  retired VM roles, or an AKS API that isn't one public `/32` plus VNet Integration.
-  If the apply stops partway, fix the cause and re-run step 1. The plan contains only
-  the remaining changes. If the CMK update is rejected, check that `id-backup-cmk` still
-  holds Key Vault Crypto Service Encryption User on `backup-cmk`.
-- **No API access from home.** Your public IP changed. Update `AKS_API_HOME_CIDR` and
-  re-run step 1. Pipelines aren't affected.
-- **VNet Integration unavailable (rebuilds only).** Add the NAT gateway's public `/32`
-  (`pip-nat`) as a second authorized range in a reviewed change to `infra/aks.tf` and
-  `plan_gate.py`. It is the egress of the node and DB subnets only.
-- **Exit 23 in step 2.** `algif_aead` is in use. Run step 3: the block rule is already
-  in place, so the module doesn't load after the reboot.
-- **Exit 45 in step 6.** Run step 5 first.
-- **Code rollback.** Revert the Outpost merge in a reviewed PR. Phase-1 stages then
-  become plannable again, through the same reviewers and gates.
+* **CMK fails in step B.** Verify public access is still disabled. Check the storage identity, its Crypto Service Encryption User grant on the backup key and the vault trusted-services path. Repeat the full run after correcting the cause. The gate refuses to remove a CMK or rerun step A on private storage.
+* **API probe fails.** Confirm the authorized home range and VNet Integration. If the NAT path is needed, use the reviewed optional NAT setting, repeat the full run and repeat the probe. Never add the runner's public range.
+* **Proof interrupted.** Preserve the first run's validated partial output. Inspect the binding, pod UID and phase before retrying. An already-revoked credential cannot demonstrate its original access a second time.
+* **Unexpected delete or replacement.** Stop and inspect the proposed addresses against the reviewed migration. Keep the live resources in place.

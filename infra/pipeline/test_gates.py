@@ -19,8 +19,8 @@ EXPECTED = ["PASS binding annotation", "PASS ordinary pod admitted", "PASS privi
 class PlanGateTests(unittest.TestCase):
     def setUp(self):
         self.allow = plan_gate.exceptions(ROOT)
-        self.plan = {"variables": {"backup_stage": {"value": "outpost"}}, "planned_values": {"root_module": {"resources": [
-            {"address": ACTOR, "mode": "managed", "values": {"sku": "Basic"}}
+        self.plan = {"variables": {"backup_stage": {"value": "outpost"}, "storage_step": {"value": "B"}}, "planned_values": {"root_module": {"resources": [
+            {"address": ACTOR, "type": "azurerm_container_registry", "mode": "managed", "values": {"sku": "Basic"}}
         ]}}}
         self.report = {"check_type": "terraform_plan",
                        "summary": {"failed": 1, "passed": 1, "skipped": 0, "resource_count": 1, "parsing_errors": 0},
@@ -43,10 +43,10 @@ class PlanGateTests(unittest.TestCase):
             "azurerm_network_security_rule.nodes_other": {"name": "nodes-other", "network_security_group_name": "nsg-nodes"},
         }
         def scan(inline, check="CKV_AZURE_160"):
-            resources = [{"address": a, "mode": "managed", "values": v} for a, v in rules.items()]
-            resources.append({"address": nsg, "mode": "managed",
+            resources = [{"address": a, "type": "azurerm_network_security_rule", "mode": "managed", "values": v} for a, v in rules.items()]
+            resources.append({"address": nsg, "type": "azurerm_network_security_group", "mode": "managed",
                               "values": {"name": "nsg-nodes", "security_rule": [{"name": n} for n in inline]}})
-            plan = {"variables": {"backup_stage": {"value": "outpost"}},
+            plan = {"variables": {"backup_stage": {"value": "outpost"}, "storage_step": {"value": "B"}},
                     "planned_values": {"root_module": {"resources": resources}}}
             report = {"check_type": "terraform_plan",
                       "summary": {"failed": 1, "passed": 1, "skipped": 0, "resource_count": 3, "parsing_errors": 0},

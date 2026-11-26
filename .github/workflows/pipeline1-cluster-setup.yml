@@ -4,10 +4,10 @@ on:
     # checkov:skip=CKV_GHA_7:The infra workflow requires fixed setup, Outpost revocation and post-release reader entry points with separate ownership.
     inputs:
       mode:
-        description: Install the platform, revoke the web identity's cluster-admin (Outpost), or roll out and prove the reader
+        description: Probe API list and exec, install the platform, revoke the web identity's cluster-admin (Outpost), or roll out and prove the reader
         type: choice
         required: true
-        options: [setup, outpost, reader]
+        options: [setup, api-probe, outpost, reader]
 permissions: {}
 concurrency:
   group: outpost-infra
@@ -31,7 +31,11 @@ jobs:
           persist-credentials: false
       - name: Authenticate infra
         run: bash infra/pipeline/azure-login.sh
+      - name: Probe Run Command list and exec after changing API access
+        if: inputs.mode == 'api-probe'
+        run: python3 ops/release/cluster.py api-probe
       - name: Verify power state, identity and Kubernetes permissions
+        if: inputs.mode != 'api-probe'
         run: python3 ops/release/cluster.py gate
       - name: Apply the reviewed platform resources
         if: inputs.mode == 'setup'

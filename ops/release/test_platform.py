@@ -149,7 +149,12 @@ elif a[:2] == ['-n', 'wiz-web'] and 'pod' in a and 'get' in a:
     else:
         uid = 'ffffffff-0000-4000-8000-000000000000' if state.get('replaced') else state['pods'][0]['uid']
         print(uid + '|', end='')
+elif 'patch' in a and 'deployment' in a:
+    if state.get('rotate_fails') or json.loads(a[-1]) != {'spec': {'template': {'spec': {'automountServiceAccountToken': False}}}}: sys.exit(1)
+elif 'rollout' in a:
+    if state.get('rollout_fails'): sys.exit(1)
 elif 'exec' in a:
+    if state.get('always_denied'): print('denied'); sys.exit(0)
     if not state['projected'] or not route(): sys.exit(2)
     if state.get('checker_broken'): sys.exit(2)
     print('allowed' if state['binding'] or state.get('allowed_anyway') else 'denied')
@@ -184,7 +189,7 @@ class OutpostTests(unittest.TestCase):
         self.assertEqual(out, f"pod web-5d8f7c9b4-abcde {POD_UID}\nbefore allowed\nafter denied\nphase outpost\napi egress closed\n")
         self.assertEqual((state["phase"], state["binding"]), ("outpost", False))
         self.assertEqual(sorted(state["policies"]), ["default-deny", "tasky"])
-        self.assertTrue(cluster.OUTPOST_EVIDENCE.fullmatch(out.strip()))
+        self.assertTrue(cluster.OUTPOST_EVIDENCE.fullmatch("\n".join(out.splitlines()[:3])))
         # The route closes only after the proof: the denial was observed through it.
         calls = (self.root / "calls").read_text().splitlines()
         self.assertGreater(min(i for i, c in enumerate(calls) if c.startswith('["apply"')),
@@ -213,9 +218,9 @@ class OutpostTests(unittest.TestCase):
             ({"phase": ""}, 102), ({"phase": "initializing"}, 102), ({"phase": "outpost"}, 111),
             ({"pods": []}, 104), ({"pods": [{"name": "web-5d8f7c9b4-abcde", "uid": POD_UID, "ready": "False"}]}, 104),
             ({"pods": [{"name": "web-5d8f7c9b4-abcde", "uid": POD_UID, "ready": "True", "deleting": "2026-11-26T00:00:00Z"}]}, 104),
-            ({"checker_broken": True}, 105), ({"delete_fails": True}, 106), ({"sticky": True}, 107),
+            ({"always_denied": True}, 105), ({"checker_broken": True}, 105), ({"delete_fails": True}, 106), ({"sticky": True}, 107),
             ({"allowed_anyway": True}, 108), ({"replaced": True}, 109), ({"patch_fails": True}, 110),
-            ({"apply_fails": True}, 112), ({"sticky_policy": True}, 113), ({"loose": True}, 113),
+            ({"rotate_fails": True}, 115), ({"rollout_fails": True}, 116), ({"apply_fails": True}, 112), ({"sticky_policy": True}, 113), ({"loose": True}, 113),
             # Baseline phase without any API route: no proof is possible, so nothing is revoked.
             ({"policies": {"default-deny": [], "tasky": [DNS, MONGO]}}, 105),
         ]
@@ -223,9 +228,33 @@ class OutpostTests(unittest.TestCase):
             with self.subTest(state=state):
                 code, out, after = self.invoke(**state)
                 self.assertEqual(code, expected)
-                self.assertEqual(out, "")
+                if expected in (110, 112, 113, 115, 116):
+                    self.assertEqual(out.splitlines()[1:], ["before allowed", "after denied"])
+                    reply = dict(provisioningState="Succeeded", exitCode=code, logs=out)
+                    with patch.object(cluster, "record") as record, self.assertRaises(cluster.CheckFailure):
+                        cluster.result(json.dumps(reply), outpost_proof=True)
+                    self.assertIn("after revocation `denied`", record.call_args.args[0])
+                    for bad in (out + "untrusted", out.replace("after denied", "after invalid")):
+                        with patch.object(cluster, "record") as record, self.assertRaises(cluster.CheckFailure):
+                            cluster.result(json.dumps(dict(reply, logs=bad)), outpost_proof=True)
+                        record.assert_not_called()
+                elif expected in (106, 107, 108, 109) or state.get("always_denied"):
+                    first = "denied" if state.get("always_denied") else "allowed"
+                    self.assertEqual(out.splitlines()[1:], ["before " + first])
+                    with patch.object(cluster, "record") as record, self.assertRaises(cluster.CheckFailure):
+                        cluster.result(json.dumps(dict(provisioningState="Succeeded", exitCode=code, logs=out)), outpost_proof=True)
+                    self.assertIn("after observation incomplete", record.call_args.args[0])
+                else:
+                    self.assertEqual(out, "")
                 if expected in (104, 105):
                     self.assertTrue(after["binding"], "nothing may be revoked before the first observation")
+
+    def test_jq_preflight_preserves_live_binding(self):
+        tool = self.root / "jq"
+        tool.write_text("#!/bin/sh\nexit 1\n")
+        tool.chmod(0o700)
+        code, out, state = self.invoke()
+        self.assertEqual((code, out, state["binding"]), (114, "", True))
 
     def test_runner_requires_complete_consistent_evidence(self):
         good = f"pod web-5d8f7c9b4-abcde {POD_UID}\nbefore allowed\nafter denied\nphase outpost\napi egress closed"

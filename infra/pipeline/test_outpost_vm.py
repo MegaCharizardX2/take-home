@@ -5,6 +5,7 @@ Fakes never echo secret-shaped literals; synthetic values are built at runtime.
 """
 import hashlib
 import json
+from ipaddress import IPv4Address
 import os
 from pathlib import Path
 import re
@@ -64,8 +65,9 @@ if args[0] == "rest":
     if method == "get":
         code = int(os.environ.get("EXIT", "0"))
         state = "Succeeded" if code == 0 else "Failed"
-        # The runner must never read or print the guest's own output.
-        print(json.dumps({"state": state, "code": code, "output": os.environ["NOISE"]})); sys.exit(0)
+        # Assumption for resume: managed Run Command returns the script stdout
+        # in instanceView.output, optionally with a trailing line ending.
+        print(json.dumps({"state": state, "code": code, "output": os.environ["GUEST_OUTPUT"]})); sys.exit(0)
 sys.exit(3)
 '''
 
@@ -88,9 +90,9 @@ class RunnerTests(unittest.TestCase):
         tool(self.bin, "sha256sum", FAKE_SHA)
         tool(self.bin, "sleep", "#!/bin/sh\nexit 0\n")
 
-    def run_runner(self, mode, case="", code=0):
+    def run_runner(self, mode, case="", code=0, output="kernel=verified mongo=verified\n"):
         env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", FIXTURE=str(self.root), CASE=case,
-                   EXIT=str(code), NOISE=GUEST_NOISE, ARM_SUBSCRIPTION_ID=SUB, RUNNER_TEMP=str(self.root),
+                   EXIT=str(code), GUEST_OUTPUT=output, ARM_SUBSCRIPTION_ID=SUB, RUNNER_TEMP=str(self.root),
                    GITHUB_RUN_ID="42", GITHUB_RUN_ATTEMPT="1")
         return subprocess.run(["bash", RUNNER, mode], env=env, capture_output=True, text=True)
 
@@ -124,6 +126,23 @@ class RunnerTests(unittest.TestCase):
                 self.assertIn(label, reply.stdout)
                 self.assertNotIn(GUEST_NOISE, reply.stdout + reply.stderr)
                 self.assertTrue((self.root / "deleted").exists())
+
+    def test_inspect_and_applicability_summaries_are_validated(self):
+        fields = "ubuntu 20.04 6.0.26 disabled inactive tcp/27017,udp/53"
+        reply = self.run_runner("inspect", output=fields + "\n")
+        self.assertEqual(reply.returncode, 0, reply.stderr)
+        self.assertIn("OS=ubuntu 20.04 MongoDB=6.0.26 sshd=disabled/inactive listening_ports=tcp/27017,udp/53", reply.stdout)
+        for output in (fields + "\n" + GUEST_NOISE, fields.replace("53", "65536"), ""):
+            with self.subTest(output=output):
+                reply = self.run_runner("inspect", output=output)
+                self.assertNotEqual(reply.returncode, 0)
+                self.assertNotIn(GUEST_NOISE, reply.stdout + reply.stderr)
+        reply = self.run_runner("cve-verify", output="kernel=not-applicable mongo=verified\r\n")
+        self.assertEqual(reply.returncode, 0, reply.stderr)
+        self.assertIn("CVE-2026-31431=not-applicable CVE-2025-14847=verified", reply.stdout)
+        reply = self.run_runner("cve-verify", output=GUEST_NOISE)
+        self.assertNotEqual(reply.returncode, 0)
+        self.assertNotIn(GUEST_NOISE, reply.stdout + reply.stderr)
 
     def test_rejected_request_and_stopped_vm(self):
         reply = self.run_runner("backup", case="rejected")
@@ -190,13 +209,20 @@ GUEST_FAKES = {
     "flock": '#!/bin/sh\nexit 0\n',
     "sleep": '#!/bin/sh\nexit 0\n',
     "mongod": '#!/bin/sh\ncat "$FIX/mongod-version"\n',
+    "ss": '#!/bin/sh\ncat "$FIX/sockets"\n',
     "mongosh": '#!/bin/sh\n[ -f "$FIX/active" ]\n',
     "systemctl": r'''#!/usr/bin/env python3
 import os, sys
 from pathlib import Path
 fix = Path(os.environ["FIX"]); a = sys.argv[1:]
 with open(fix / "systemctl.log", "a") as f: print(" ".join(a), file=f)
-if a[:2] == ["show", "-p"]: print((fix / "pid").read_text().strip())
+if a == ["disable", "--now", "ssh"]:
+    if not (fix / "disable-failed").exists():
+        (fix / "ssh").write_text("disabled inactive")
+    else: sys.exit(1)
+elif a == ["show", "-p", "UnitFileState", "--value", "ssh.service"]: print((fix / "ssh").read_text().split()[0])
+elif a == ["show", "-p", "ActiveState", "--value", "ssh.service"]: print((fix / "ssh").read_text().split()[1])
+elif a[:2] == ["show", "-p"]: print((fix / "pid").read_text().strip())
 elif a[0] == "is-active": sys.exit(0 if (fix / "active").exists() else 3)
 elif a[0] == "daemon-reload": pass
 elif a[0] == "restart":
@@ -236,7 +262,7 @@ class GuestTests(unittest.TestCase):
         root = self.fix / "root"
         for d in ("etc/modprobe.d", "etc/systemd/system", "proc/100", "run/lock", "lib/modules/5.15.0-1089-azure"):
             (root / d).mkdir(parents=True)
-        (root / "etc/os-release").write_text('NAME="Ubuntu"\nVERSION_ID="20.04"\n')
+        (root / "etc/os-release").write_text('ID=ubuntu\nNAME="Ubuntu"\nVERSION_ID="20.04"\n')
         (root / "etc/mongod.conf").write_text("net:\n  bindIp: 127.0.0.1\n  port: 27017\n")
         (root / "lib/modules/5.15.0-1089-azure/modules.builtin").write_text("kernel/crypto/sha256_generic.ko\n")
         # Phase-1 state: algif_aead loaded, mongod running with the default compressors.
@@ -245,15 +271,19 @@ class GuestTests(unittest.TestCase):
         (self.fix / "pid").write_text("100")
         (self.fix / "active").write_text("yes")
         (self.fix / "mongod-version").write_text("db version v6.0.26\nBuild Info: {}\n")
+        (self.fix / "ssh").write_text("disabled inactive")
         self.bin = self.fix / "bin"
         self.bin.mkdir()
         for name, body in GUEST_FAKES.items():
             tool(self.bin, name, body)
 
-    def guest(self, mode, script=GUEST):
+    def guest(self, mode, script=GUEST, output=None):
         env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", FIX=str(self.fix), OUTPOST_SYSROOT=str(self.fix / "root"))
         reply = subprocess.run(["bash", script, mode], env=env, capture_output=True, text=True)
-        self.assertEqual(reply.stdout + reply.stderr, "", "the guest must print nothing")
+        if output is None:
+            output = "kernel=verified mongo=verified\n" if reply.returncode == 0 and script == GUEST else ""
+        self.assertEqual(reply.stdout, output)
+        self.assertEqual(reply.stderr, "")
         return reply.returncode
 
     def restarts(self):
@@ -279,8 +309,8 @@ class GuestTests(unittest.TestCase):
         self.assertEqual(self.guest("apply"), 0)
         root = self.fix / "root"
         cases = {
-            11: lambda: (root / "etc/os-release").write_text('VERSION_ID="22.04"\n'),
-            12: lambda: (self.fix / "mongod-version").write_text("db version v7.0.1\n"),
+            11: lambda: (root / "etc/os-release").write_text('ID=ubuntu\n'),
+            12: lambda: (self.fix / "mongod-version").write_text("bad version string\n"),
             21: lambda: (root / "lib/modules/5.15.0-1089-azure/modules.builtin").write_text("kernel/crypto/algif_aead.ko\n"),
             24: lambda: (root / "etc/modprobe.d/outpost-cve-2026-31431.conf").write_text("blacklist algif_aead\n"),
             25: lambda: (root / "proc/modules").write_text("algif_aead 20480 0 - Live 0x0\n"),
@@ -302,6 +332,34 @@ class GuestTests(unittest.TestCase):
                     shutil.rmtree(self.fix)
                     shutil.move(snapshot, self.fix)
         self.assertEqual(self.guest("nonsense"), 10)
+
+    def test_inspect_reads_only_and_sanitizes_listeners(self):
+        (self.fix / "ssh").write_text("enabled active")
+        (self.fix / "sockets").write_text("tcp LISTEN 0 128 [::]:22 [::]:*\n"
+                                            "udp UNCONN 0 0 127.0.0.53:53 0.0.0.0:*\n"
+                                            "tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\n")
+        self.assertEqual(self.guest("inspect", output="ubuntu 20.04 6.0.26 enabled active tcp/22,udp/53\n"), 0)
+        self.assertEqual((self.fix / "systemctl.log").read_text().splitlines(),
+                         ["show -p UnitFileState --value ssh.service", "show -p ActiveState --value ssh.service"])
+        (self.fix / "sockets").unlink()
+        self.assertEqual(self.guest("inspect"), 43)
+
+    def test_ssh_and_independent_workaround_applicability(self):
+        (self.fix / "ssh").write_text("enabled active")
+        self.assertEqual(self.guest("verify"), 42)
+        (self.fix / "disable-failed").touch()
+        self.assertEqual(self.guest("apply"), 41)
+        (self.fix / "disable-failed").unlink()
+        (self.fix / "active").unlink()
+        self.assertEqual(self.guest("install"), 0)
+        self.assertEqual((self.fix / "ssh").read_text(), "disabled inactive")
+        self.assertEqual(self.restarts(), 1)
+        (self.fix / "mongod-version").write_text("db version v8.0.0\n")
+        self.assertEqual(self.guest("verify", output="kernel=verified mongo=not-applicable\n"), 0)
+        (self.fix / "root/etc/os-release").write_text("ID=ubuntu\nVERSION_ID=24.04\n")
+        self.assertEqual(self.guest("verify", output="kernel=not-applicable mongo=not-applicable\n"), 0)
+        (self.fix / "mongod-version").write_text("db version v6.0.26\n")
+        self.assertEqual(self.guest("verify", output="kernel=not-applicable mongo=verified\n"), 0)
 
     def test_module_in_use_asks_for_a_reboot(self):
         (self.fix / "in-use").write_text("yes")
@@ -326,17 +384,29 @@ sys.exit(1)
 '''
 
 
+# Generate global fixture addresses in process. Both az and curl are offline fakes.
+FIXTURE_HOME, FIXTURE_NAT, FIXTURE_OTHER = (str(IPv4Address((23 << 24) + i)) for i in range(1, 4))
+
+
 def evidence_fixtures():
     rg = f"/subscriptions/{SUB}/resourceGroups/takehome-rg"
     account = rg + "/providers/Microsoft.Storage/storageAccounts/stoutpost123456789a"
     principal = "11111111-2222-3333-4444-" + "5" * 12
     writer = "99999999-8888-7777-6666-" + "5" * 12
+    reader = "77777777-2222-3333-4444-" + "5" * 12
+    reader_role = "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1"
+    role = f"/subscriptions/{SUB}/providers/Microsoft.Authorization/roleDefinitions/"
+    blobs = "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/"
+    def grant(actor, definition):
+        return {"properties": {"scope": account + "/blobServices/default/containers/backups",
+                               "principalId": actor, "roleDefinitionId": role + definition}}
     return principal, {
         "/storageAccounts?api-version": {"value": [{"name": "stoutpost123456789a"}, {"name": "sttakehometf20581"}]},
         "/storageAccounts/stoutpost123456789a?api-version": {"properties": {
             "publicNetworkAccess": "Disabled", "allowBlobPublicAccess": False, "allowSharedKeyAccess": False,
             "networkAcls": {"defaultAction": "Deny"},
-            "encryption": {"keySource": "Microsoft.Keyvault", "keyvaultproperties": {"keyname": "backup-cmk"},
+            "encryption": {"keySource": "Microsoft.Keyvault", "keyvaultproperties": {"keyname": "backup-cmk",
+                               "keyvaulturi": "https://kv-outpost-123456789a.vault.azure.net/"},
                            "identity": {"userAssignedIdentity": rg + "/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-backup-cmk"}}}},
         "/containers/backups?": {"properties": {"publicAccess": "None"}},
         "/privateEndpointConnections?": {"value": [{"properties": {"privateLinkServiceConnectionState": {"status": "Approved"}}}]},
@@ -346,27 +416,39 @@ def evidence_fixtures():
         "/networkSecurityGroups/nsg-mongo?": {"properties": {"securityRules": [
             {"properties": {"direction": "Inbound", "access": "Allow", "destinationPortRange": "27017"}},
             {"properties": {"direction": "Inbound", "access": "Deny", "destinationPortRange": "27017"}},
-            {"properties": {"direction": "Inbound", "access": "Deny", "destinationPortRange": "22"}}]}},
+            {"properties": {"direction": "Inbound", "access": "Deny", "sourceAddressPrefix": "*", "protocol": "Tcp", "destinationPortRange": "22"}}]}},
         "/userAssignedIdentities/id-mongo?": {"properties": {"principalId": principal}},
-        "/roleDefinitions?": {"value": [{"name": writer, "properties": {"roleName": "Lab Backup Writer"}}]},
-        "/roleAssignments?": {"value": [{"properties": {
-            "roleDefinitionId": f"/subscriptions/{SUB}/providers/Microsoft.Authorization/roleDefinitions/{writer}",
-            "scope": account + "/blobServices/default/containers/backups"}}]},
-        "/managedClusters/aks-outpost?": {"properties": {"apiServerAccessProfile": {
-            "enableVnetIntegration": True, "enablePrivateCluster": False, "authorizedIPRanges": ["1.2.3.4/32"]}}},
+        "/userAssignedIdentities/id-backup-reader?": {"properties": {"principalId": reader}},
+        "/roleDefinitions/" + writer: {"properties": {"roleName": "Lab Backup Writer", "permissions": [
+            {"actions": [], "notActions": [], "dataActions": [blobs + "write", blobs + "add/action"], "notDataActions": []}]}},
+        "/roleDefinitions/" + reader_role: {"properties": {"roleName": "Storage Blob Data Reader", "permissions": [
+            {"dataActions": [blobs + "read"]}]}},
+        "%24filter=principalId%20eq%20%27" + principal: {"value": [grant(principal, writer)]},
+        "atScope()%20and%20assignedTo": {"value": []},
+        "%24filter=atScope()": {"value": [grant(principal, writer), grant(reader, reader_role)]},
+        "/permissions?api-version=2022-05-01-preview": {"value": [{"actions": ["*"], "notActions": ["Microsoft.Authorization/*/Write"]}]},
+        "/publicIPAddresses/pip-nat?": {"properties": {"ipAddress": FIXTURE_NAT}},
+        "/managedClusters/aks-outpost?": {"properties": {"fqdn": "sample.example.azmk8s.io", "apiServerAccessProfile": {
+            "enableVnetIntegration": True, "enablePrivateCluster": False, "authorizedIPRanges": [FIXTURE_HOME + "/32"]}}},
     }
 
 
 class EvidenceTests(unittest.TestCase):
-    def evidence(self, responses, http="403"):
+    def evidence(self, responses, http="403", api_status="0.05 0 000", api_exit=28, mode="evidence", nat="false"):
         with tempfile.TemporaryDirectory() as directory:
             d = Path(directory)
             tool(d, "az", FAKE_EVIDENCE_AZ)
-            tool(d, "curl", f"#!/bin/sh\nprintf '%s' '{http}'\n")
+            tool(d, "curl", f"""#!/bin/sh
+case "$*" in
+    *azmk8s.io*) printf '%s' '{api_status}'; exit {api_exit} ;;
+    *) printf '%s' '{http}' ;;
+esac
+""")
             (d / "responses.json").write_text(json.dumps(responses))
             env = dict(os.environ, PATH=f"{d}:{os.environ['PATH']}", RESPONSES=str(d / "responses.json"),
-                       ARM_SUBSCRIPTION_ID=SUB, RUNNER_TEMP=directory)
-            reply = subprocess.run(["bash", EVIDENCE], env=env, capture_output=True, text=True)
+                       ARM_SUBSCRIPTION_ID=SUB, RUNNER_TEMP=directory, AKS_API_HOME_CIDR=FIXTURE_HOME + "/32",
+                       AKS_API_ALLOW_NAT=nat)
+            reply = subprocess.run(["bash", EVIDENCE, mode], env=env, capture_output=True, text=True)
             self.assertFalse(list(d.glob("outpost-evidence.*")))
             return reply
 
@@ -374,9 +456,9 @@ class EvidenceTests(unittest.TestCase):
         principal, responses = evidence_fixtures()
         reply = self.evidence(responses)
         self.assertEqual(reply.returncode, 0, reply.stderr)
-        self.assertEqual(sum(line.startswith("PASS ") for line in reply.stdout.splitlines()), 8)
+        self.assertEqual(sum(line.startswith("PASS ") for line in reply.stdout.splitlines()), 10)
         self.assertIn("(HTTP 403)", reply.stdout)
-        for private in (principal, "1.2.3.4", "10.84.2.36", "stoutpost123456789a"):
+        for private in (principal, FIXTURE_HOME, "10.84.2.36", "stoutpost123456789a"):
             self.assertNotIn(private, reply.stdout + reply.stderr)
 
     def test_each_weakness_fails_its_own_check(self):
@@ -396,7 +478,7 @@ class EvidenceTests(unittest.TestCase):
             (15, change(["/networkInterfaces/nic-mongo?", "properties", "ipConfigurations", 0, "properties", "publicIPAddress"], {"id": "x"})),
             (15, change(["/publicIPAddresses?", "value"], [{"name": "pip-mongo"}])),
             (16, change(["/networkSecurityGroups/nsg-mongo?", "properties", "securityRules", 2, "properties", "access"], "Allow")),
-            (17, change(["/roleAssignments?", "value"], [{"properties": {"roleDefinitionId": "/x/virtual-machine-contributor", "scope": "/x"}}])),
+            (17, change(["atScope()%20and%20assignedTo", "value"], [{"properties": {"scope": "/x"}}])),
             (18, change(["/managedClusters/aks-outpost?", "properties", "apiServerAccessProfile", "authorizedIPRanges"], [])),
             (18, change(["/managedClusters/aks-outpost?", "properties", "apiServerAccessProfile", "authorizedIPRanges"], ["0.0.0.0/32"])),
         ]
@@ -408,7 +490,59 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(reply.returncode, code, reply.stdout + reply.stderr)
                 self.assertTrue(reply.stderr.startswith("FAIL "))
         _, responses = evidence_fixtures()
-        self.assertEqual(self.evidence(responses, http="200").returncode, 14)
+        for status in ("000", "200", "302", "401", "500"):
+            with self.subTest(http=status):
+                self.assertEqual(self.evidence(responses, http=status).returncode, 14)
+        self.assertEqual(self.evidence(responses, http="409").returncode, 0)
+
+    def test_secondary_writer_grant_below_group_fails(self):
+        principal, responses = evidence_fixtures()
+        grants = responses["%24filter=principalId%20eq%20%27" + principal]["value"]
+        grants.append({"properties": {"principalId": principal, "scope": "/other-resource"}})
+        self.assertEqual(self.evidence(responses).returncode, 17)
+
+    def test_inherited_custom_roles_and_pages(self):
+        _, responses = evidence_fixtures()
+        scope_query = "%24filter=atScope()"
+        role = "a" * 8 + "-1111-2222-3333-" + "b" * 12
+        extra = responses[scope_query]["value"][0]["properties"].copy()
+        extra["scope"] = f"/subscriptions/{SUB}"
+        extra["roleDefinitionId"] = f"/subscriptions/{SUB}/providers/Microsoft.Authorization/roleDefinitions/{role}"
+        responses[scope_query]["nextLink"] = "https://management.azure.com/second-page"
+        responses["/second-page"] = {"value": [{"properties": extra}]}
+        grant = {"dataActions": ["Microsoft.Storage/*"]}
+        responses["/roleDefinitions/" + role] = {"properties": {"roleName": "Custom", "permissions": [grant]}}
+        self.assertEqual(self.evidence(responses).returncode, 17)
+        grant["dataActions"] = ["Microsoft.ContainerService/*"]
+        self.assertEqual(self.evidence(responses).returncode, 0)
+        del responses["/second-page"]
+        self.assertEqual(self.evidence(responses).returncode, 17)
+
+    def test_report_collects_all_controls(self):
+        _, responses = evidence_fixtures()
+        del responses["/storageAccounts?api-version"]
+        resp = self.evidence(responses, mode="report")
+        self.assertEqual(resp.returncode, 11)
+        self.assertEqual(len([row for row in resp.stdout.splitlines() if row.endswith(("PASS |", "FAIL |"))]), 10)
+        self.assertIn("PASS external runner", resp.stdout)
+
+    def test_negative_probe_requires_dns_without_tcp(self):
+        _, responses = evidence_fixtures()
+        for rc, fields in [(6, "0 0 000"), (28, "0 0 000"), (28, "0.1 0.2 000"), (0, "0.1 0.2 403")]:
+            with self.subTest(rc=rc, fields=fields):
+                self.assertEqual(self.evidence(responses, api_exit=rc, api_status=fields).returncode, 19)
+
+    def test_nat_and_exemption_privileges(self):
+        _, responses = evidence_fixtures()
+        ranges = responses["/managedClusters/aks-outpost?"]["properties"]["apiServerAccessProfile"]["authorizedIPRanges"]
+        ranges.append(FIXTURE_NAT + "/32")
+        self.assertEqual(self.evidence(responses).returncode, 18)
+        self.assertEqual(self.evidence(responses, nat="true").returncode, 0)
+        ranges[1] = FIXTURE_OTHER + "/32"
+        self.assertEqual(self.evidence(responses, nat="true").returncode, 18)
+        ranges.pop()
+        responses["/permissions?api-version=2022-05-01-preview"]["value"].append({"actions": ["Microsoft.Authorization/*"], "notActions": []})
+        self.assertEqual(self.evidence(responses).returncode, 20)
 
 
 if __name__ == "__main__":

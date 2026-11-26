@@ -292,16 +292,28 @@ a=sys.argv[1:]; mode=os.environ['MODE']
 with open('calls', 'a') as f: print(' '.join(a), file=f)
 if 'pods' in a:
     if mode == 'unreadable': sys.exit(1)
-    if mode != 'none': print('web-abc-123||True')
+    if mode == 'empty-response': sys.exit(0)
+    if mode == 'unrecognized': print('unknown||token|pod')
+    elif mode == 'partial': print('web-abc-123|')
+    elif mode == 'unready':
+        # An unready, nonterminating pod still has the token. It must reach the exec guard.
+        assert 'Ready' not in a[-1]
+        print('web-abc-123||token|pod')
+    elif mode != 'none': print('web-abc-123||' + ('' if mode == 'token-free' else 'token') + '|pod')
+    print('end')
 elif 'exec' in a:
-    if mode == 'token-free': sys.exit(2)
+    if mode == 'token-free': sys.exit(1)
+    if mode == 'unexpected': print('unexpected'); sys.exit(0)
+    if mode in ('no-answer', 'unready'): sys.exit(2)
+    if mode == 'broken': print('denied'); sys.exit(1)
     print('allowed' if mode == 'baseline' else 'denied')
 elif 'apply' in a or 'rollout' in a: pass
 else: sys.exit(1)
 ''')
         kubectl.chmod(0o700)
         (self.path / 'deploy.yaml').write_text('kind: List\n')
-        for mode, code in (('baseline', 45), ('revoked', 0), ('token-free', 0), ('none', 0), ('unreadable', 46)):
+        for mode, code in (('baseline', 45), ('revoked', 0), ('token-free', 0), ('none', 0), ('unreadable', 46),
+                           ('unrecognized', 46), ('empty-response', 46), ('partial', 46), ('unready', 47), ('broken', 47), ('unexpected', 47), ('no-answer', 47)):
             with self.subTest(mode=mode):
                 (self.path / 'calls').unlink(missing_ok=True)
                 reply = subprocess.run(['bash', cluster.SCRIPTS / 'deploy.sh'], cwd=self.path, capture_output=True,
@@ -313,19 +325,44 @@ else: sys.exit(1)
     def test_reader_proves_private_list_and_get(self):
         kubectl = self.path / 'kubectl'
         kubectl.write_text('#!/bin/sh\n[ "$*" = "-n wiz-evidence exec deployment/backup-reader -c reader -- /app/backup-reader" ] || exit 9\n'
-                           'echo "20261126T084846Z-run/dump.archive.gz 1 private-listing"\nexit "$READER"\n')
+                           'echo "$OUTPUT"\nexit "$READER"\n')
         kubectl.chmod(0o700)
-        for status, code, out in (('0', 0, b'backup verified privately\n'), ('1', 86, b'')):
-            with self.subTest(status=status):
-                reply = subprocess.run(['bash', cluster.SCRIPTS / 'reader.sh', 'verify'], cwd=self.path, capture_output=True,
-                                       env=dict(os.environ, PATH=f"{self.path}:{os.environ['PATH']}", READER=status))
-                self.assertEqual((reply.returncode, reply.stdout), (code, out))
-        with patch.object(cluster, 'ingress', return_value=('host', '123456789a')), \
-                patch.object(cluster, 'arm', side_effect=['acroutpost123456789a.azurecr.io', 'stoutpost123456789a']), \
-                patch.object(cluster, 'invoke', return_value=(SUB, f'{REG}/tasky@{APP}')), \
-                patch.object(cluster, 'scan'), patch.object(cluster, 'fixed') as fixed:
-            cluster.reader(self.path)
-        self.assertEqual([call.args[3] for call in fixed.call_args_list], ['reader ready', 'backup verified privately'])
+        proof = f'objects 2 newest 20261126T084846Z-{SUB}/dump.archive.gz sha256 ' + 'a' * 64 + ' endpoint 10.84.2.68'
+        for status, output, code in ((0, proof, 0), (1, proof, 86), (0, 'unexpected', 87),
+                                     (0, proof + '\nuntrusted', 87), (0, proof.replace('.68', '.96'), 87)):
+            with self.subTest(status=status, output=output):
+                reply = subprocess.run(['bash', cluster.SCRIPTS / 'reader.sh', 'verify'], cwd=self.path, capture_output=True, text=True,
+                                       env=dict(os.environ, PATH=f"{self.path}:{os.environ['PATH']}", READER=str(status), OUTPUT=output))
+                self.assertEqual((reply.returncode, reply.stdout), (code, '' if code else proof + '\n'))
+        for output in (proof, 'unexpected', proof.replace('.68', '.96')):
+            with self.subTest(output=output), patch.object(cluster, 'ingress', return_value=('host', '123456789a')), \
+                    patch.object(cluster, 'arm', side_effect=['acroutpost123456789a.azurecr.io', 'stoutpost123456789a']), \
+                    patch.object(cluster, 'invoke', side_effect=[(SUB, f'{REG}/tasky@{APP}'), (SUB, output)]), \
+                    patch.object(cluster, 'scan'), patch.object(cluster, 'fixed'), patch.object(cluster, 'record') as record:
+                if output == proof:
+                    cluster.reader(self.path)
+                    self.assertIn('10.84.2.68', record.call_args.args[0])
+                else:
+                    with self.assertRaises(cluster.Failure):
+                        cluster.reader(self.path)
+                    self.assertEqual(record.call_count, 1)
+
+    def test_api_probe_lists_and_execs_in_one_invocation(self):
+        kubectl = self.path / 'kubectl'
+        kubectl.write_text('#!/bin/sh\ncase "$*" in\n'
+                           '"-n kube-system get pods -o name") [ "$FAIL" != list ] && echo pod/system ;;\n'
+                           '"-n wiz-web exec deployment/web -c web -- /bin/busybox true") [ "$FAIL" != exec ] ;;\n'
+                           '*) exit 1 ;;\nesac\n')
+        kubectl.chmod(0o700)
+        for fail, code in (('', 0), ('list', 117), ('exec', 118)):
+            reply = subprocess.run(['bash', cluster.SCRIPTS / 'api-probe.sh'], cwd=self.path, capture_output=True,
+                                   env=dict(os.environ, PATH=f"{self.path}:{os.environ['PATH']}", FAIL=fail))
+            self.assertEqual(reply.returncode, code)
+        with patch.object(cluster, 'arm', return_value=SUB), patch.dict(os.environ, ARM_CLIENT_ID=SUB), \
+                patch.object(cluster, 'fixed') as fixed:
+            cluster.api_probe(self.path)
+            fixed.assert_called_once()
+            self.assertEqual(fixed.call_args.args[2], ['auth.txt', 'auth.sh', 'api-probe.sh'])
 
 
 if __name__ == '__main__':

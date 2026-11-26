@@ -7,7 +7,7 @@ on:
         description: Outpost step (see docs/outpost-runbook.md for the order)
         type: choice
         required: true
-        options: [mitigate-cves, verify-cves, reboot-and-verify-cves, backup-now, evidence]
+        options: [mitigate-cves, verify-cves, reboot-and-verify-cves, backup-now, inspect, evidence, report]
 
 permissions: {}
 concurrency:
@@ -36,12 +36,12 @@ jobs:
         run: |
           set -euo pipefail
           case "$STEP" in
-            mitigate-cves|verify-cves|reboot-and-verify-cves|backup-now|evidence) ;;
+            mitigate-cves|verify-cves|reboot-and-verify-cves|backup-now|inspect|evidence|report) ;;
             *) echo 'Invalid Outpost step.' >&2; exit 2 ;;
           esac
           bash infra/pipeline/azure-login.sh
       - name: Run the reviewed guest step through VM Run Command
-        if: inputs.step != 'evidence'
+        if: inputs.step != 'evidence' && inputs.step != 'report'
         run: |
           set -euo pipefail
           case "$STEP" in
@@ -49,11 +49,15 @@ jobs:
             verify-cves) mode=cve-verify ;;
             reboot-and-verify-cves) mode=cve-reboot-verify ;;
             backup-now) mode=backup ;;
+            inspect) mode=inspect ;;
           esac
           bash infra/pipeline/vm-run-command.sh "$mode"
       - name: Read back the Outpost state through ARM
-        if: inputs.step == 'evidence'
-        run: bash infra/pipeline/outpost-evidence.sh
+        if: inputs.step == 'evidence' || inputs.step == 'report'
+        env:
+          AKS_API_HOME_CIDR: ${{ secrets.AKS_API_HOME_CIDR }}
+          AKS_API_ALLOW_NAT: ${{ vars.AKS_API_ALLOW_NAT || 'false' }}
+        run: bash infra/pipeline/outpost-evidence.sh "$STEP"
       - name: Remove private runner files
         if: always()
         run: rm -rf -- "$RUNNER_TEMP/outpost-azure" "$RUNNER_TEMP"/outpost-vm.* "$RUNNER_TEMP"/outpost-evidence.*

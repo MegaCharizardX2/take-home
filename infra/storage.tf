@@ -30,9 +30,12 @@ resource "azurerm_storage_account" "backup" {
     identity_ids = [local.identities["id-backup-cmk"].id]
   }
   # A versionless key ID follows the key's automatic rotation.
-  customer_managed_key {
-    key_vault_key_id          = azurerm_key_vault_key.backup.versionless_id
-    user_assigned_identity_id = local.identities["id-backup-cmk"].id
+  dynamic "customer_managed_key" {
+    for_each = var.storage_step == "B" ? [1] : []
+    content {
+      key_vault_key_id          = azurerm_key_vault_key.backup.versionless_id
+      user_assigned_identity_id = local.identities["id-backup-cmk"].id
+    }
   }
   blob_properties {
     versioning_enabled = true

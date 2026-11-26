@@ -44,10 +44,26 @@ variable "backup_stage" {
   }
 }
 
+variable "storage_step" {
+  type        = string
+  default     = "B"
+  description = "Step A closes existing public storage before step B attaches the CMK."
+  validation {
+    condition     = contains(["A", "B"], var.storage_step)
+    error_message = "Choose storage step A or B."
+  }
+}
+
+variable "allow_nat_api" {
+  type        = bool
+  default     = false
+  description = "Also admit the node and database subnets' static NAT IP to the AKS public API."
+}
+
 variable "aks_api_home_cidr" {
   type        = string
   sensitive   = true
-  description = "Operator's home public IPv4 as a /32, the only customer range on the public AKS API. In-VNet clients use the integrated private API path."
+  description = "Operator's home public IPv4 as a /32, the required range on the public AKS API. In-VNet clients use the integrated private API path."
   validation {
     condition = (
       can(regex("^([0-9]{1,3}[.]){3}[0-9]{1,3}/32$", var.aks_api_home_cidr)) &&

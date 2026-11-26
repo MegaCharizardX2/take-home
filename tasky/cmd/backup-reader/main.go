@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -113,8 +115,9 @@ func (b blobs) read(ctx context.Context, suffix string, limit int64) ([]byte, er
 	return smallBody(body, limit)
 }
 
-func (b blobs) latest(ctx context.Context, out io.Writer) (string, error) {
+func (b blobs) latest(ctx context.Context) (string, int, error) {
 	latest, marker := "", ""
+	count := 0
 	for {
 		query := url.Values{"restype": {"container"}, "comp": {"list"}, "maxresults": {"500"}}
 		if marker != "" {
@@ -122,7 +125,7 @@ func (b blobs) latest(ctx context.Context, out io.Writer) (string, error) {
 		}
 		data, err := b.read(ctx, "?"+query.Encode(), 2<<20)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		var page struct {
 			Items []struct {
@@ -132,13 +135,16 @@ func (b blobs) latest(ctx context.Context, out io.Writer) (string, error) {
 			Next string `xml:"NextMarker"`
 		}
 		if err := xml.Unmarshal(data, &page); err != nil {
-			return "", err
+			return "", 0, err
+		}
+		count += len(page.Items)
+		if count > 999999999 {
+			return "", 0, errors.New("too many objects")
 		}
 		for _, item := range page.Items {
 			if !runObject.MatchString(item.Name) || item.Size < 0 {
 				continue
 			}
-			fmt.Fprintf(out, "%s %d\n", item.Name, item.Size)
 			if run, complete := strings.CutSuffix(item.Name, "/complete.json"); complete && run > latest {
 				latest = run
 			}
@@ -147,18 +153,18 @@ func (b blobs) latest(ctx context.Context, out io.Writer) (string, error) {
 			break
 		}
 		if marker == page.Next {
-			return "", errors.New("invalid continuation")
+			return "", 0, errors.New("invalid continuation")
 		}
 		marker = page.Next
 	}
 	if latest == "" {
-		return "", errors.New("no completed backup")
+		return "", 0, errors.New("no completed backup")
 	}
-	return latest, nil
+	return latest, count, nil
 }
 
 func (b blobs) verify(ctx context.Context, dir string, out io.Writer) error {
-	run, err := b.latest(ctx, out)
+	run, count, err := b.latest(ctx)
 	if err != nil {
 		return err
 	}
@@ -173,7 +179,13 @@ func (b blobs) verify(ctx context.Context, dir string, out io.Writer) error {
 	if json.Unmarshal(data, &receipt) != nil || receipt.Archive != archiveName || receipt.Bytes <= 0 || receipt.Bytes > maxArchive || len(receipt.SHA256) != 64 {
 		return errors.New("invalid completion record")
 	}
-	body, err := b.get(ctx, "/"+run+"/"+archiveName)
+	// Record the peer actually selected for the archive GET, including a reused TLS connection.
+	var peer atomic.Pointer[net.TCPAddr]
+	trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
+		addr, _ := info.Conn.RemoteAddr().(*net.TCPAddr)
+		peer.Store(addr)
+	}}
+	body, err := b.get(httptrace.WithClientTrace(ctx, trace), "/"+run+"/"+archiveName)
 	if err != nil {
 		return err
 	}
@@ -190,10 +202,14 @@ func (b blobs) verify(ctx context.Context, dir string, out io.Writer) error {
 	if copyErr != nil || closeErr != nil || n != receipt.Bytes || sum != receipt.SHA256 {
 		return errors.New("backup verification failed")
 	}
+	addr := peer.Load()
+	if addr == nil {
+		return errors.New("missing storage peer")
+	}
 	if err = os.Rename(temp.Name(), filepath.Join(dir, archiveName)); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "%s/%s %d %s\n", run, archiveName, n, sum)
+	fmt.Fprintf(out, "objects %d newest %s/%s sha256 %s endpoint %s\n", count, run, archiveName, sum, addr.IP)
 	return nil
 }
 

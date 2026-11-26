@@ -1,4 +1,4 @@
-#trivy:ignore:AZU-0047:exp:2026-12-08
+# The lab scan attaches the dated AZU-0047 exception to this ingress rule.
 resource "azurerm_network_security_rule" "ingress" {
   name                        = "Internet-to-ingress"
   resource_group_name         = local.rg.name
