@@ -10,7 +10,10 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
-const sessionDuration = 5 * time.Minute
+const (
+	sessionDuration = 30 * time.Minute
+	renewalWindow   = 15 * time.Minute
+)
 
 // MaxDisplayNameBytes bounds the optional cookie claim, including for legacy accounts.
 const MaxDisplayNameBytes = 128
@@ -35,17 +38,17 @@ func (s *Sessions) Set(w http.ResponseWriter, id, displayName string) error {
 	if len(displayName) > MaxDisplayNameBytes {
 		displayName = ""
 	}
-	expiry := time.Now().Add(sessionDuration)
+	expiry := jwt.NewNumericDate(time.Now().Add(sessionDuration))
 	claims := Claims{
 		UserID: id, DisplayName: displayName,
-		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(expiry)},
+		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: expiry},
 	}
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.key)
 	if err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: "token", Value: token, Path: "/", Expires: expiry,
+		Name: "token", Value: token, Path: "/", Expires: expiry.Time,
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	})
 	return nil
@@ -88,7 +91,7 @@ func (s *Sessions) Require(html bool) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Task not found"})
 			return
 		}
-		if time.Until(claims.ExpiresAt.Time) < 30*time.Second {
+		if time.Until(claims.ExpiresAt.Time) < renewalWindow {
 			if err := s.Set(c.Writer, claims.UserID, claims.DisplayName); err != nil {
 				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Session unavailable"})
 				return

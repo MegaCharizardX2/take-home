@@ -4,6 +4,11 @@
 /k8s/ @MegaCharizardX2 @msftnadavbh
 /automation/ @MegaCharizardX2 @msftnadavbh
 /scripts/ @MegaCharizardX2 @msftnadavbh
+/ops/ @MegaCharizardX2 @msftnadavbh
+/tests/ @MegaCharizardX2 @msftnadavbh
+/tasky/Dockerfile @MegaCharizardX2 @msftnadavbh
 /.checkov.yaml @MegaCharizardX2 @msftnadavbh
 /.trivyignore @MegaCharizardX2 @msftnadavbh
+/.trivyignore.yaml @MegaCharizardX2 @msftnadavbh
+/trivy.yaml @MegaCharizardX2 @msftnadavbh
 /.gitleaks.toml @MegaCharizardX2 @msftnadavbh
