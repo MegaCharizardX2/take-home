@@ -35,6 +35,9 @@ jobs:
       - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337
         if: hashFiles('infra/**/*.tf*') != ''
       - name: Validate Terraform modules
+        env:
+          # Read-only job token: authenticated TFLint plugin downloads avoid GitHub's anonymous rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           [[ -d infra ]] || { echo "No infra directory yet"; exit 0; }
           terraform fmt -check -recursive infra

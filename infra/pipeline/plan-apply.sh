@@ -27,11 +27,13 @@ trap 'rm -rf -- "$private"' EXIT
 if ! terraform -chdir=infra plan -input=false -no-color -lock-timeout=5m \
     "-var=backup_stage=$stage" "${targets[@]}" "-out=$private/saved.tfplan" >"$private/plan.log" 2>&1; then
     echo 'Terraform plan failed. No apply was attempted.' >&2
+    python3 infra/pipeline/error_excerpt.py "$private/plan.log"
     exit 1
 fi
 if ! terraform -chdir=infra show -json "$private/saved.tfplan" 2>"$private/show.log" |
     jq . >"$private/tfplan.json" 2>"$private/json.log"; then
     echo 'Could not decode the saved plan.' >&2
+    python3 infra/pipeline/error_excerpt.py "$private/show.log"
     exit 1
 fi
 
@@ -47,6 +49,7 @@ python3 infra/pipeline/plan_gate.py "$private/checkov.json" "$private/tfplan.jso
 if ! terraform -chdir=infra apply -input=false -no-color -lock-timeout=5m \
     "$private/saved.tfplan" >"$private/apply.log" 2>&1; then
     echo 'Terraform failed to apply the scanned plan. Inspect the lab Activity Log before retrying.' >&2
+    python3 infra/pipeline/error_excerpt.py "$private/apply.log"
     exit 1
 fi
 printf 'Applied the scanned %s plan for backup stage %s.\n' "$mode" "$stage"

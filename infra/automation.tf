@@ -18,7 +18,7 @@ resource "azurerm_automation_runtime_environment" "power" {
   location                 = local.location
   runtime_language         = "PowerShell"
   runtime_version          = "7.4"
-  runtime_default_packages = { Az = "12.3.0" }
+  runtime_default_packages = { az = "12.3.0" } # Azure stores the key in lowercase; "Az" forced a replace.
   tags                     = local.tags
 }
 

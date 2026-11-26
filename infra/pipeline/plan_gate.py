@@ -72,6 +72,26 @@ def lab_exceptions_current():
     return datetime.datetime.now(datetime.timezone.utc).date() < datetime.date(2026, 12, 8)
 
 
+def mirrored_rules(resources, address):
+    """Standalone rule addresses that an NSG's refreshed inline rules mirror, or None.
+
+    After apply, Azure returns standalone azurerm_network_security_rule objects inside
+    their parent NSG, so the plan repeats them in the NSG's security_rule list and
+    Checkov flags the NSG too. Re-attribute only when every inline rule is one of the
+    plan's standalone rules on that NSG; an unknown inline rule keeps the finding.
+    """
+    if not address.startswith("azurerm_network_security_group."):
+        return None
+    nsg = resources.get(address) or {}
+    standalone = {v.get("name"): a for a, v in resources.items()
+                  if a.startswith("azurerm_network_security_rule.")
+                  and v.get("network_security_group_name") == nsg.get("name")}
+    inline = [rule.get("name") for rule in nsg.get("security_rule") or []]
+    if not inline or any(name not in standalone for name in inline):
+        return None
+    return {standalone[name] for name in inline}
+
+
 def verify(report, plan, status, allowed):
     if report["check_type"] != "terraform_plan" or status not in (0, 1):
         raise ValueError("Checkov did not complete a Terraform plan scan")
@@ -92,7 +112,9 @@ def verify(report, plan, status, allowed):
         rule = finding["check_id"]
         address = finding.get("resource_address") or finding["resource"]
         basic = address != "azurerm_container_registry.images" or resources.get(address, {}).get("sku") == "Basic"
-        if (rule, address) not in allowed or address not in resources or not basic:
+        mirrors = mirrored_rules(resources, address) or set()
+        approved = (rule, address) in allowed or any((rule, m) in allowed for m in mirrors)
+        if not approved or address not in resources or not basic:
             # Resource indexes and scanner evidence can contain private values.
             unexpected.add(rule if re.fullmatch(r"CKV2?_[A-Z0-9_]+", rule) else "unknown check")
     if unexpected:
