@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tasky</title>
+  <link rel="stylesheet" href="/assets/css/login.css">
+  <script src="/assets/js/login.js" defer></script>
+</head>
+<body>
+  <main class="main">
+    <input type="checkbox" id="chk" aria-label="Show login form">
+    <form class="signup" id="signup" method="post" action="/signup">
+      <label for="chk">Sign up</label>
+      <input id="signupname" name="username" placeholder="Username" aria-label="Username" autocomplete="username" maxlength="128" required>
+      <input id="signupemail" type="email" name="email" placeholder="Email" aria-label="Email" autocomplete="email" required>
+      <input id="signuppass" type="password" name="password" placeholder="Password" aria-label="Password" autocomplete="new-password" required>
+      <button id="signupbtn">Sign up</button>
+      <span class="error" role="alert"></span>
+    </form>
+    <form class="login" id="login" method="post" action="/login">
+      <label for="chk">Login</label>
+      <input id="loginemail" type="email" name="email" placeholder="Email" aria-label="Email" autocomplete="email" required>
+      <input id="loginpass" type="password" name="password" placeholder="Password" aria-label="Password" autocomplete="current-password" required>
+      <button id="loginbtn">Login</button>
+      <span class="error" id="error" role="alert"></span>
+    </form>
+  </main>
+</body>
+</html>

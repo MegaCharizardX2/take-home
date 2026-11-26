@@ -1,0 +1,53 @@
+name: Pipeline 1 cluster setup
+on:
+  workflow_dispatch:
+    # checkov:skip=CKV_GHA_7:The infra workflow requires fixed setup and post-release reader entry points with separate ownership.
+    inputs:
+      mode:
+        description: Install the platform or roll out the reader after the web release
+        type: choice
+        required: true
+        options: [setup, reader]
+permissions: {}
+concurrency:
+  group: outpost-infra
+  cancel-in-progress: false
+jobs:
+  platform:
+    if: github.repository == 'MegaCharizardX2/take-home' && github.ref == 'refs/heads/main'
+    environment: infra
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Authenticate infra
+        run: bash infra/pipeline/azure-login.sh
+      - name: Verify power state, identity and Kubernetes permissions
+        run: python3 ops/release/cluster.py gate
+      - name: Apply the reviewed platform resources
+        if: inputs.mode == 'setup'
+        run: python3 ops/release/cluster.py setup
+      - name: Install Tasky credentials
+        if: inputs.mode == 'setup'
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        run: python3 ops/release/cluster.py secret
+      - name: Verify and install the pinned Traefik chart
+        if: inputs.mode == 'setup'
+        run: python3 ops/release/cluster.py traefik
+      - name: Roll out reader with the deployed web image
+        if: inputs.mode == 'reader'
+        run: python3 ops/release/cluster.py reader
+      - name: Remove private inputs and Azure session
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/outpost-cluster" "$RUNNER_TEMP/outpost-azure"

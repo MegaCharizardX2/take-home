@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: wiz-web
+  labels: {app: web, app.kubernetes.io/part-of: outpost}
+  annotations:
+    checkov.io/skip1: "CKV_K8S_38=The PDF requires the web service account's cluster-admin credential for the baseline marker review."
+    checkov.io/skip2: "CKV_K8S_35=The PDF requires MongoDB access via a Kubernetes environment variable; both credentials use secretKeyRef."
+spec:
+  replicas: 2
+  revisionHistoryLimit: 2
+  progressDeadlineSeconds: 420
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web, app.kubernetes.io/part-of: outpost}
+      annotations:
+        outpost.wiz/revision: "0000000000000000000000000000000000000000"
+    spec:
+      serviceAccountName: web
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      nodeSelector:
+        workload: web
+      tolerations:
+        - {key: workload, operator: Equal, value: web, effect: NoSchedule}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: wait-mongo
+          image: acroutpost0000000000.azurecr.io/busybox@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              i=0
+              while [ "$i" -lt 20 ]; do
+                if timeout 3 nc -w 2 mongo.wiz.internal 27017 </dev/null; then exit 0; fi
+                i=$((i+1))
+                sleep 2
+              done
+              exit 1
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 10m, memory: 8Mi, ephemeral-storage: 1Mi}
+            limits: {cpu: 50m, memory: 32Mi, ephemeral-storage: 8Mi}
+          # The probe needs only TCP. An existing mount here prevents Kubernetes
+          # from projecting the web service account credential into the init container.
+          volumeMounts:
+            - {name: tmp, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+      containers:
+        - name: web
+          image: acroutpost0000000000.azurecr.io/tasky@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: Always
+          ports:
+            - {name: http, containerPort: 8080, protocol: TCP}
+          env:
+            - name: MONGODB_URI
+              valueFrom: {secretKeyRef: {name: tasky-config, key: MONGODB_URI}}
+            - name: SECRET_KEY
+              valueFrom: {secretKeyRef: {name: tasky-config, key: SECRET_KEY}}
+            - {name: GIN_MODE, value: release}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 100m, memory: 64Mi, ephemeral-storage: 16Mi}
+            limits: {cpu: 500m, memory: 192Mi, ephemeral-storage: 64Mi}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 3
+            failureThreshold: 25
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 15
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 32Mi}

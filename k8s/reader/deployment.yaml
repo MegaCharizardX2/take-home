@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backup-reader
+  namespace: wiz-evidence
+  labels: {app: backup-reader, app.kubernetes.io/part-of: outpost}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels: {app: backup-reader}
+  template:
+    metadata:
+      labels: {app: backup-reader, azure.workload.identity/use: "true"}
+    spec:
+      serviceAccountName: backup-reader
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector: {kubernetes.azure.com/mode: system}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: reader
+          image: acroutpost0000000000.azurecr.io/tasky@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: Always
+          command: ["/app/backup-reader"]
+          args: ["--serve"]
+          env:
+            - {name: BACKUP_ACCOUNT, value: stoutpost0000000000}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 25m, memory: 16Mi, ephemeral-storage: 32Mi}
+            limits: {cpu: 150m, memory: 64Mi, ephemeral-storage: 288Mi}
+          livenessProbe:
+            exec: {command: ["/app/backup-reader", "--live"]}
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 3
+          readinessProbe:
+            exec: {command: ["/app/backup-reader", "--ready"]}
+            periodSeconds: 15
+            timeoutSeconds: 3
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}

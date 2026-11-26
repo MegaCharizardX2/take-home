@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tasky</title>
+  <link rel="stylesheet" href="/assets/css/style.css">
+  <script src="/assets/js/script.js" defer></script>
+</head>
+<body>
+  <main class="wrapper" data-user-id="{{.UserID}}" data-display-name="{{.DisplayName}}">
+    <p id="username"></p>
+    <form class="task-input">
+      <img src="/assets/img/bars-icon.svg" alt="">
+      <input type="text" aria-label="Task name" placeholder="Add a new task" maxlength="4096" required>
+    </form>
+    <div class="controls">
+      <div class="filters" aria-label="Task filters">
+        <button type="button" class="active" id="all" aria-pressed="true">All</button>
+        <button type="button" id="pending" aria-pressed="false">Pending</button>
+        <button type="button" id="completed" aria-pressed="false">Completed</button>
+      </div>
+      <button type="button" class="clear-btn" disabled>Clear All</button>
+    </div>
+    <p id="error" role="alert"></p>
+    <ul class="task-box"></ul>
+  </main>
+</body>
+</html>

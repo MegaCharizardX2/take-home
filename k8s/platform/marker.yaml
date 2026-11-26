@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: panel-marker
+  namespace: wiz-evidence
+data:
+  marker: outpost
