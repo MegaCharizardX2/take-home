@@ -36,6 +36,29 @@ class PlanGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Unapproved"):
                     plan_gate.verify(bad, self.plan, 1, self.allow)
 
+    def test_nsg_findings_follow_only_mirrored_reviewed_rules(self):
+        nsg = 'azurerm_network_security_group.lab["mongo"]'
+        rules = {
+            "azurerm_network_security_rule.ssh": {"name": "Internet-to-mongo-ssh", "network_security_group_name": "nsg-mongo"},
+            "azurerm_network_security_rule.mongo_aks": {"name": "mongo-aks", "network_security_group_name": "nsg-mongo"},
+        }
+        def scan(inline, check="CKV_AZURE_10"):
+            resources = [{"address": a, "mode": "managed", "values": v} for a, v in rules.items()]
+            resources.append({"address": nsg, "mode": "managed",
+                              "values": {"name": "nsg-mongo", "security_rule": [{"name": n} for n in inline]}})
+            plan = {"planned_values": {"root_module": {"resources": resources}}}
+            report = {"check_type": "terraform_plan",
+                      "summary": {"failed": 1, "passed": 1, "skipped": 0, "resource_count": 3, "parsing_errors": 0},
+                      "results": {"failed_checks": [{"resource_address": nsg, "check_id": check}]}}
+            with patch.object(plan_gate, "lab_exceptions_current", return_value=True):
+                return plan_gate.verify(report, plan, 1, self.allow)
+        self.assertEqual(scan(["Internet-to-mongo-ssh", "mongo-aks"]), 1)
+        for inline, check in ((["Internet-to-mongo-ssh", "rogue-rdp"], "CKV_AZURE_10"),
+                              ([], "CKV_AZURE_10"),
+                              (["Internet-to-mongo-ssh"], "CKV_AZURE_9")):
+            with self.subTest(inline=inline, check=check), self.assertRaisesRegex(ValueError, "Unapproved"):
+                scan(inline, check)
+
     def test_expired_waivers_and_scanner_errors_block(self):
         with patch.object(plan_gate, "lab_exceptions_current", return_value=False), self.assertRaisesRegex(ValueError, "expired"):
             plan_gate.verify(self.report, self.plan, 1, self.allow)
