@@ -76,12 +76,44 @@ def record(line):
             print(file=summary)
 
 
-AUTH_CHECKS = {
-    11: 'cannot create namespaces', 12: 'cannot create cluster role bindings', 13: 'invalid gate mode',
-    14: 'cannot patch deployments in wiz-web', 15: 'cannot list nodes', 16: 'access review request failed',
-    17: 'access review did not cleanly deny wiz-evidence configmaps', 18: 'wiz-evidence configmap write was allowed',
-    19: 'wiz-evidence write failed for a reason other than RBAC',
+# Fixed, secret-free labels for the numbered exits of every Run Command script.
+CHECKS = {
+    # auth.sh
+    11: 'auth: cannot create namespaces', 12: 'auth: cannot create cluster role bindings', 13: 'auth: invalid gate mode',
+    14: 'auth: cannot patch deployments in wiz-web', 15: 'auth: cannot list nodes', 16: 'auth: access review request failed',
+    17: 'auth: access review did not cleanly deny wiz-evidence configmaps', 18: 'auth: wiz-evidence configmap write was allowed',
+    19: 'auth: wiz-evidence write failed for a reason other than RBAC',
+    # platform.sh
+    21: 'platform: namespaces apply failed', 22: 'platform: platform resources apply failed',
+    23: 'platform: namespace, web service account or marker missing', 24: 'platform: web phase record unreadable',
+    25: 'platform: baseline binding missing after the Outpost revocation', 26: 'platform: baseline binding create failed',
+    27: 'platform: baseline binding content unexpected', 28: 'platform: web phase advance failed',
+    29: 'platform: cluster-admin binding present in the Outpost phase', 30: 'platform: unknown web phase',
+    # traefik.sh
+    31: 'traefik: helm install failed', 32: 'traefik: controller rollout not ready',
+    33: 'traefik: ingress class missing', 34: 'traefik: load balancer IP is not pip-ingress',
+    # deploy.sh (42 stays reserved for the principal gate)
+    41: 'deploy: server dry-run rejected the manifest', 43: 'deploy: apply failed', 44: 'deploy: web rollout not ready in time',
+    # verify.sh
+    61: 'verify: invalid release inputs', 62: 'verify: web node missing or not unique', 63: 'verify: web node not ready or missing its taint',
+    64: 'verify: deployment state unreadable or generation not observed', 65: 'verify: replicas, images or revision differ from the release',
+    66: 'verify: current ReplicaSet not found', 67: 'verify: a pod is not current or not ready',
+    68: 'verify: pod placement, selector or images wrong', 69: 'verify: pod toleration missing',
+    70: 'verify: web container not running or init container failed', 71: 'verify: web image ID differs from the pushed digest',
+    72: 'verify: init image ID differs from the pushed digest', 73: 'verify: marker file content differs',
+    74: 'verify: not exactly two verified pods',
+    # reader.sh
+    81: 'reader: web rollout not ready', 82: 'reader: web image unreadable', 83: 'reader: reader apply failed',
+    84: 'reader: reader rollout not ready', 85: 'reader: invalid reader mode',
 }
+# Azure role assignments can take minutes to reach the cluster: retry only these release checks.
+RELEASE_RETRYABLE = {14, 15}
+
+
+class CheckFailure(Failure):
+    def __init__(self, code):
+        super().__init__('Kubernetes check failed: ' + CHECKS[code])
+        self.code = code
 
 
 def result(reply, *, principal_gate=False):
@@ -90,9 +122,10 @@ def result(reply, *, principal_gate=False):
     code = doc.get('exitCode')
     if principal_gate and type(code) is int and code == 42:
         raise Failure('Unexpected Kubernetes principal')
-    if principal_gate and type(code) is int and code in AUTH_CHECKS:
-        raise Failure('Kubernetes permission check failed: ' + AUTH_CHECKS[code])
-    require(type(code) is int and code == 0, 'Missing or unsuccessful remote exit code')
+    if type(code) is int and code in CHECKS:
+        raise CheckFailure(code)
+    require(type(code) is int, 'Missing remote exit code')
+    require(code == 0, f'Remote command failed with exit code {code}')
     # Azure CLI returns commandResults.name as id or a full ARM resource ID.
     prefix = r'/subscriptions/' + UUID + r'/resourceGroups/takehome-rg/providers/Microsoft\.ContainerService/managedClusters/aks-outpost/commandResults/'
     request = checked(doc.get('id'), rf'(?i)(?:{prefix})?(?:[0-9a-f]{{32}}|{UUID})', 'AKS request ID')
@@ -126,7 +159,7 @@ def fixed(work, command, files, proof, **kwargs):
 
 
 def gate(work, mode):
-    deadline = time.monotonic() + 900
+    deadline = time.monotonic() + (900 if mode == 'infra' else 360)
     client = env('ARM_CLIENT_ID', UUID)
     aks = arm('aks', 'show', '-g', 'takehome-rg', '-n', 'aks-outpost', '--query', '[provisioningState,powerState.code]')
     require(aks.split() == ['Succeeded', 'Running'], 'AKS unavailable')
@@ -147,9 +180,12 @@ def gate(work, mode):
                   timeout=min(120, max(1, deadline - time.monotonic())), principal_gate=True)
             return
         except Failure as error:
-            if str(error) == 'Unexpected Kubernetes principal' or mode == 'release':
+            if str(error) == 'Unexpected Kubernetes principal':
+                raise
+            if mode == 'release' and getattr(error, 'code', None) not in RELEASE_RETRYABLE:
                 raise
             last = str(error)
+            record(f'{last}; retrying while Azure role assignments propagate')
         time.sleep(max(0, min(delay, deadline - time.monotonic())))
         delay = min(2 * delay, 60)
     raise Failure('Authorization deadline exceeded: ' + last)
@@ -299,6 +335,26 @@ def render(work):
             print('~~~\n\n</details>', file=summary)
 
 
+CURL_HINTS = {0: 'responded', 6: 'DNS lookup failed', 7: 'connection refused', 28: 'timed out',
+              35: 'TLS handshake failed', 60: 'certificate not trusted yet'}
+# The first Let's Encrypt HTTP-01 order starts when the app Ingress appears: allow about 7 minutes.
+ROUTE_DELAYS = (0, 10, 20, 30, 30, 30, 60, 60, 60, 60, 60)
+
+
+def curl_status(args):
+    """Run curl without raising; return its exit code and stdout (the write-out text only)."""
+    try:
+        reply = subprocess.run(args, capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return -1, b''
+    return reply.returncode, reply.stdout
+
+
+def http_code(text):
+    code = text.partition(b' ')[0]
+    return code.decode() if re.fullmatch(rb'[0-9]{3}', code) else '-'
+
+
 def public_route(_work):
     host = env('INGRESS_FQDN', FQDN)
     https = f'https://{host}/readyz'
@@ -306,20 +362,21 @@ def public_route(_work):
     # Disable curl startup config and proxies so these requests are anonymous and direct.
     curl = ['curl', '-q', '--noproxy', '*', '--silent', '--max-time', '8', '--max-filesize', '65536',
             '--output', os.devnull, '--write-out']
-    for delay in (0, 5, 10, 20, 40, 60):
+    for attempt, delay in enumerate(ROUTE_DELAYS, 1):
         if delay:
             time.sleep(delay)
-        try:
-            ready = run(curl + ['%{http_code} %{size_download}', https], timeout=10)
-            require(ready == b'200 0', 'HTTPS readiness check failed')
-            redirect = run(curl + ['%{http_code} %{redirect_url}', f'http://{host}/readyz'], timeout=10)
-            status, _, target = redirect.partition(b' ')
-            require(status in (b'301', b'302', b'303', b'307', b'308') and target in targets,
-                    'HTTP redirect check failed')
-        except Failure:
+        code, ready = curl_status(curl + ['%{http_code} %{size_download}', https])
+        if code != 0 or ready != b'200 0':
+            # Only curl's exit code and the 3-digit HTTP status are logged, never response data.
+            record(f'Attempt {attempt}: HTTPS readiness curl exit {code} '
+                   f'({CURL_HINTS.get(code, "other")}), HTTP {http_code(ready)}')
             continue
-        record('Public HTTPS readiness and HTTP redirect verified')
-        return
+        code, redirect = curl_status(curl + ['%{http_code} %{redirect_url}', f'http://{host}/readyz'])
+        status, _, target = redirect.partition(b' ')
+        if code == 0 and status in (b'301', b'302', b'303', b'307', b'308') and target in targets:
+            record('Public HTTPS readiness and HTTP redirect verified')
+            return
+        record(f'Attempt {attempt}: HTTP redirect check failed, curl exit {code}, HTTP {http_code(redirect)}')
     raise Failure('Public HTTPS readiness or HTTP redirect verification failed')
 
 
