@@ -17,7 +17,9 @@ else
     [[ $(kubectl auth can-i patch deployments.apps -n wiz-web) == yes ]] || exit 14
     [[ $(kubectl auth can-i list nodes) == yes ]] || exit 15
     # A denial can include an authorizer reason. Only the decision and evaluation error matter.
-    decision=$(kubectl create -f - -o 'jsonpath={.status.allowed}{"|"}{.status.evaluationError}{"|"}' <<'JSON'
+    # --validate=false: kubectl's client-side check lists CRDs cluster-wide, which the release
+    # identity rightly can't do. The API server still validates this review request.
+    decision=$(kubectl create --validate=false -f - -o 'jsonpath={.status.allowed}{"|"}{.status.evaluationError}{"|"}' <<'JSON'
 {"apiVersion":"authorization.k8s.io/v1","kind":"SelfSubjectAccessReview","spec":{"resourceAttributes":{"namespace":"wiz-evidence","verb":"create","group":"","resource":"configmaps"}}}
 JSON
     ) || exit 16

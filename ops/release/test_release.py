@@ -126,7 +126,7 @@ if args == ['auth', 'whoami', '-o', 'jsonpath={.status.userInfo.username}']:
     print(os.environ['MOCK_PRINCIPAL'])
 elif args in (['auth', 'can-i', 'patch', 'deployments.apps', '-n', 'wiz-web'], ['auth', 'can-i', 'list', 'nodes']):
     print('yes')
-elif args == ['create', '-f', '-', '-o', 'jsonpath={.status.allowed}{"|"}{.status.evaluationError}{"|"}']:
+elif args == ['create', '--validate=false', '-f', '-', '-o', 'jsonpath={.status.allowed}{"|"}{.status.evaluationError}{"|"}']:
     Path('review.json').write_text(sys.stdin.read())
     status = json.loads(os.environ['MOCK_REVIEW'])
     print(str(status.get('allowed', '')).lower(), status.get('evaluationError', ''), '', sep='|')
