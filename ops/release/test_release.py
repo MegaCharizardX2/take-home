@@ -18,6 +18,13 @@ SUB = 'aaaaaaaa-0000-0000-0000-aaaaaaaaaaaa'
 REG = 'acroutpost123456789a.azurecr.io'
 APP = 'sha256:' + 'a' * 64
 INIT = 'sha256:' + 'b' * 64
+# Verbatim kubectl 1.35.8 output captured 26 Nov through AKS Run Command (identity redacted).
+REAL_CONFIGMAP_DENIAL = ('error: failed to create configmap: configmaps is forbidden: User "<redacted>" cannot create resource '
+                         '"configmaps" in API group "" in the namespace "wiz-evidence": User does not have access to the '
+                         'resource in Azure. Update role assignment to allow access.')
+REAL_CRD_VALIDATION = ('error: error validating "STDIN": error validating data: failed to check CRD: failed to list CRDs: '
+                       'customresourcedefinitions.apiextensions.k8s.io is forbidden: User "<redacted>" cannot list resource '
+                       '"customresourcedefinitions" in API group "apiextensions.k8s.io" at the cluster scope')
 ENV = dict(ACR_LOGIN_SERVER=REG, INGRESS_FQDN='outpost-123456789a.testhash.eastus2.sysgen.cloudapp.azure.com',
            REVISION=SHA, GITHUB_SHA=SHA, TASKY_DIGEST=APP, BUSYBOX_DIGEST=INIT,
            TASKY_CONFIG_DIGEST='sha256:'+'c'*64, BUSYBOX_CONFIG_DIGEST='sha256:'+'d'*64, ARM_SUBSCRIPTION_ID=SUB)
@@ -140,12 +147,15 @@ else:
 ''')
         kubectl.chmod(0o700)
         (self.path / 'auth.txt').write_text(f'{SUB} {SUB} release\n')
-        reason = 'Error from server (Forbidden): User cannot create resource "configmaps" in the namespace "wiz-evidence": Azure does not have access'
+        reason = REAL_CONFIGMAP_DENIAL
+        legacy = ('Error from server (Forbidden): configmaps "outpost-release-boundary-check" is forbidden: User "x" '
+                  'cannot create resource "configmaps" in API group "" in the namespace "wiz-evidence"')
         denial = {'allowed': False, 'reason': 'Azure does not have access'}
         cases = [(SUB, denial, 0, reason, 1, 0), ('unexpected', denial, 0, reason, 1, 42),
                  (SUB, {'allowed': True}, 0, reason, 1, 17), (SUB, dict(denial, evaluationError='webhook unavailable'), 0, reason, 1, 17),
                  (SUB, {}, 0, reason, 1, 17), (SUB, denial, 2, reason, 1, 16),
-                 (SUB, denial, 0, '', 0, 18), (SUB, denial, 0, 'connection refused', 1, 19)]
+                 (SUB, denial, 0, '', 0, 18), (SUB, denial, 0, 'connection refused', 1, 19),
+                 (SUB, denial, 0, legacy, 1, 0), (SUB, denial, 0, REAL_CRD_VALIDATION, 1, 19)]
         for principal, review, status, dry_reason, dry_status, expected in cases:
             with self.subTest(principal=principal, review=review, status=status, dry_reason=dry_reason):
                 env = dict(os.environ, PATH=f"{self.path}:{os.environ['PATH']}", MOCK_PRINCIPAL=principal,
@@ -160,22 +170,21 @@ else:
     def test_public_route_retries_tls_then_checks_direct_anonymous_gets(self):
         host = ENV['INGRESS_FQDN']
         for port in ('', ':443'):
+            replies = [(60, b'000 0'), (0, b'200 0'), (0, f'308 https://{host}{port}/readyz'.encode())]
             with self.subTest(port=port), patch.object(cluster, 'time') as clock, patch.object(cluster, 'record') as record, \
-                    patch.object(cluster, 'run', side_effect=[cluster.Failure('TLS'), b'200 0',
-                                 f'308 https://{host}{port}/readyz'.encode()]) as run:
+                    patch.object(cluster, 'curl_status', side_effect=replies) as curl:
                 cluster.public_route(self.path)
-                clock.sleep.assert_called_once_with(5)
-                self.assertEqual([call.args[0][-1] for call in run.call_args_list],
+                clock.sleep.assert_called_once_with(10)
+                self.assertEqual([call.args[0][-1] for call in curl.call_args_list],
                                  [f'https://{host}/readyz', f'https://{host}/readyz', f'http://{host}/readyz'])
-                for call in run.call_args_list:
+                for call in curl.call_args_list:
                     args = call.args[0]
                     self.assertEqual(args[:4], ['curl', '-q', '--noproxy', '*'])
                     self.assertEqual(args[4:-2], ['--silent', '--max-time', '8', '--max-filesize', '65536',
                                                   '--output', os.devnull, '--write-out'])
-                    self.assertEqual(call.kwargs, {'timeout': 10})
-                self.assertEqual([call.args[0][-2] for call in run.call_args_list],
-                                 ['%{http_code} %{size_download}'] * 2 + ['%{http_code} %{redirect_url}'])
-                record.assert_called_once_with('Public HTTPS readiness and HTTP redirect verified')
+                self.assertEqual([call.args[0] for call in record.call_args_list],
+                                 ['Attempt 1: HTTPS readiness curl exit 60 (certificate not trusted yet), HTTP 000',
+                                  'Public HTTPS readiness and HTTP redirect verified'])
 
     def test_public_route_fails_closed_without_printing_remote_data(self):
         host = ENV['INGRESS_FQDN']
@@ -183,20 +192,58 @@ else:
                  (b'200 0', b'308 https://other.invalid/readyz'), (b'200 0', f'301 https://{host}/login'.encode()),
                  (b'200 0', f'302 http://{host}/readyz'.encode())]
         for ready, redirect in cases:
-            def reply(args, **kwargs):
-                return ready if args[-1].startswith('https://') else redirect
+            def reply(args):
+                return 0, (ready if args[-1].startswith('https://') else redirect)
 
             with self.subTest(ready=ready, redirect=redirect), patch.object(cluster, 'time') as clock, \
-                    patch.object(cluster, 'run', side_effect=reply) as run, patch.object(cluster, 'record') as record:
+                    patch.object(cluster, 'curl_status', side_effect=reply), patch.object(cluster, 'record') as record:
                 with self.assertRaisesRegex(cluster.Failure, '^Public HTTPS readiness or HTTP redirect verification failed$'):
                     cluster.public_route(self.path)
-                self.assertEqual(clock.sleep.call_count, 5)
-                self.assertLessEqual(run.call_count, 12)
-                record.assert_not_called()
-        with patch.dict(os.environ, INGRESS_FQDN='wrong.invalid'), patch.object(cluster, 'run') as run:
+                self.assertEqual(clock.sleep.call_count, len(cluster.ROUTE_DELAYS) - 1)
+                for call in record.call_args_list:
+                    line = call.args[0]
+                    self.assertRegex(line, r'^Attempt [0-9]+: ')
+                    self.assertNotIn('other.invalid', line)
+                    self.assertNotIn('/login', line)
+                    self.assertNotIn(host, line)
+        with patch.dict(os.environ, INGRESS_FQDN='wrong.invalid'), patch.object(cluster, 'curl_status') as curl:
             with self.assertRaises(cluster.Failure):
                 cluster.public_route(self.path)
-            run.assert_not_called()
+            curl.assert_not_called()
+
+    def test_release_gate_retries_only_role_propagation(self):
+        def outcome(codes):
+            calls = iter(codes)
+            def fake(*args, **kwargs):
+                code = next(calls)
+                if code:
+                    raise cluster.CheckFailure(code)
+            return fake
+        with patch.dict(os.environ, ARM_CLIENT_ID=SUB, RELEASE_PRINCIPAL_ID=SUB), patch.object(cluster, 'arm', return_value='Succeeded Running'), \
+                patch.object(cluster, 'time') as clock, patch.object(cluster, 'record'):
+            clock.monotonic.return_value = 0
+            with patch.object(cluster, 'fixed', side_effect=outcome([15, 14, 0])) as fixed:
+                cluster.gate(self.path, 'release')
+                self.assertEqual(fixed.call_count, 3)
+            for code in (17, 19, 13):
+                with self.subTest(code=code), patch.object(cluster, 'fixed', side_effect=outcome([code, 0])) as fixed:
+                    with self.assertRaisesRegex(cluster.Failure, cluster.CHECKS[code]):
+                        cluster.gate(self.path, 'release')
+                    self.assertEqual(fixed.call_count, 1)
+
+    def test_every_script_exit_code_has_a_label(self):
+        import re
+        seen = {}
+        for script in sorted(cluster.SCRIPTS.glob('*.sh')):
+            if script.name in ('login.sh', 'images.sh'):
+                continue  # these run on the runner, not through AKS Run Command
+            for code in map(int, re.findall(r'exit ([0-9]+)', script.read_text())):
+                if code in (0, 42):
+                    continue
+                self.assertIn(code, cluster.CHECKS, f'{script.name} exit {code} has no label')
+                self.assertTrue(cluster.CHECKS[code].startswith(script.stem.split('.')[0] + ':'), (script.name, code))
+                seen.setdefault(code, script.name)
+                self.assertEqual(seen[code], script.name, f'exit {code} reused across scripts')
 
     def test_remote_placement_and_marker_evidence(self):
         # kubectl fixture emits the projected fields for a current rollout and two pods.
@@ -206,8 +253,8 @@ import os, sys
 a=sys.argv[1:]; bad=os.environ.get('BAD'); node='aks-web-1'; uid=os.environ['ARM_SUBSCRIPTION_ID']; rs='b'+uid[1:]
 web=os.environ['ACR_LOGIN_SERVER']+'/tasky@'+os.environ['TASKY_DIGEST']; init=os.environ['ACR_LOGIN_SERVER']+'/busybox@'+os.environ['BUSYBOX_DIGEST']
 if 'nodes' in a: print(node if bad!='duplicate node' else node+'\\nsecond')
-elif 'node' in a: print('True',uid,'workload=web:NoSchedule,' if bad!='taint' else '-')
-elif 'deploy' in a: print(uid,3,2 if bad=='stale generation' else 3,2,2,2,2,2,4,web,init,os.environ['GITHUB_SHA'])
+elif 'node' in a: print('|'.join(['True',uid,'workload=web:NoSchedule,' if bad!='taint' else '']))
+elif 'deploy' in a: print('|'.join(map(str,[uid,3,2 if bad=='stale generation' else 3,2,2,2,'' if bad=='rolling' else 2,2,4,web,init,os.environ['GITHUB_SHA']])))
 elif 'rs' in a: print(rs,uid,3 if bad=='stale rs' else 4)
 elif 'pods' in a:
     for name in ('web-abc-123','web-abc-456'):
@@ -219,11 +266,13 @@ else: sys.exit(1)
         kubectl.chmod(0o700)
         (self.path / 'images.txt').write_text(f'{REG}/tasky@{APP} {REG}/busybox@{INIT} {SHA} {ENV["TASKY_CONFIG_DIGEST"]} {ENV["BUSYBOX_CONFIG_DIGEST"]}\n')
         (self.path / 'expected').write_text(hashlib.sha256(b'synthetic\n').hexdigest() + '\n')
-        for bad in ('', 'duplicate node', 'taint', 'stale generation', 'stale rs', 'wrong placement', 'wrong init', 'runtime', 'marker'):
+        codes = {'': 0, 'duplicate node': 62, 'taint': 63, 'stale generation': 64, 'rolling': 65, 'stale rs': 66,
+                 'wrong placement': 68, 'wrong init': 68, 'runtime': 71, 'marker': 73}
+        for bad, code in codes.items():
             with self.subTest(bad=bad):
                 reply = subprocess.run(['bash', cluster.SCRIPTS / 'verify.sh'], cwd=self.path, capture_output=True,
                                        env=dict(os.environ, PATH=f"{self.path}:{os.environ['PATH']}", BAD=bad), check=False)
-                self.assertEqual(reply.returncode == 0, bad == '', reply.stderr)
+                self.assertEqual(reply.returncode, code, reply.stderr)
                 if bad:
                     self.assertEqual(reply.stdout, b'')
                 else:

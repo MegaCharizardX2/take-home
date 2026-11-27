@@ -26,6 +26,10 @@ JSON
     [[ $decision == 'false||' ]] || exit 17
     if message=$(kubectl -n wiz-evidence create configmap outpost-release-boundary-check \
         --from-literal=marker=synthetic --dry-run=server -o name 2>&1); then exit 18; fi
-    [[ $message == *'(Forbidden)'* && $message == *'cannot create resource "configmaps"'* \
+    # Real kubectl 1.35 output, captured 26 Nov through AKS Run Command:
+    #   error: failed to create configmap: configmaps is forbidden: User "..." cannot create resource
+    #   "configmaps" in API group "" in the namespace "wiz-evidence": User does not have access ...
+    # Raw API errors print "Error from server (Forbidden): ... is forbidden:", so match the common part.
+    [[ $message == *' is forbidden: '* && $message == *'cannot create resource "configmaps"'* \
        && $message == *'in the namespace "wiz-evidence"'* ]] || exit 19
 fi
