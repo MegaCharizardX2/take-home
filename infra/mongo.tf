@@ -1,14 +1,6 @@
-resource "azurerm_public_ip" "mongo" {
-  name                = "pip-mongo"
-  location            = local.location
-  resource_group_name = local.rg.name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  zones               = ["1"]
-  tags                = local.tags
-}
-
-#trivy:ignore:AZU-0076:exp:2026-12-08
+# Outpost removed the Phase-1 public IP (pip-mongo) and the Internet SSH rule.
+# Administration is Azure VM Run Command only (pipeline1-outpost.yml), and
+# network.tf denies TCP 22 to the database from every source.
 resource "azurerm_network_interface" "mongo" {
   name                = "nic-mongo"
   location            = local.location
@@ -18,7 +10,6 @@ resource "azurerm_network_interface" "mongo" {
     subnet_id                     = azurerm_subnet.lab["mongo"].id
     private_ip_address_allocation = "Static"
     private_ip_address            = local.mongo_ip
-    public_ip_address_id          = azurerm_public_ip.mongo.id
   }
   tags = local.tags
 }
@@ -64,9 +55,12 @@ resource "azurerm_linux_virtual_machine" "mongo" {
     version   = "20.04.202505200"
   }
   # No boot_diagnostics: that also disables the serial console, an access path the
-  # lab does not need (SSH in Phase 1, Run Command after Outpost). Checkov CKV2_AZURE_39.
+  # lab does not need (Run Command is the only administration path). Checkov CKV2_AZURE_39.
   tags = local.tags
-  lifecycle { ignore_changes = [tags["lab-keep-running"]] }
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [tags["lab-keep-running"]]
+  }
   depends_on = [
     azurerm_network_interface_security_group_association.mongo,
     azurerm_subnet_network_security_group_association.lab,
@@ -101,6 +95,7 @@ resource "azurerm_managed_disk" "data" {
   public_network_access_enabled = false
   disk_encryption_set_id        = azurerm_disk_encryption_set.mongo.id
   tags                          = local.tags
+  lifecycle { prevent_destroy = true }
 }
 
 resource "azurerm_virtual_machine_data_disk_attachment" "data" {
@@ -122,7 +117,7 @@ resource "azurerm_virtual_machine_extension" "mongo" {
   settings = jsonencode({
     script = base64gzip(join("\n", concat(
       ["#!/bin/bash", "set -euo pipefail", "umask 077", "install -d -m 0700 /etc/outpost"],
-      [for name in ["install.sh", "backup.sh", "bootstrap-users.js", "commission.sh"] :
+      [for name in ["install.sh", "cve-mitigations.sh", "backup.sh", "bootstrap-users.js", "commission.sh"] :
         "base64 -d > /etc/outpost/${name} <<'GUEST_FILE'\n${filebase64("${path.module}/mongo/${name}")}\nGUEST_FILE"
       ],
       [

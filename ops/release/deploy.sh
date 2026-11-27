@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
-# Each check exits with its own code (41, 43, 44); cluster.py maps it to a fixed label.
+# Each check exits with its own code (41, 43-47); cluster.py maps it to a fixed label.
 set -euo pipefail
-kubectl -n wiz-web --request-timeout=60s apply --server-side --dry-run=server --field-manager=outpost-release -f deploy.yaml >/dev/null || exit 41
-kubectl -n wiz-web --request-timeout=60s apply --server-side --field-manager=outpost-release -f deploy.yaml >/dev/null || exit 43
+k=(kubectl -n wiz-web --request-timeout=60s)
+# Outpost order: the token-free release must not replace the pod that proves the
+# revocation. While a running web pod's own token is still allowed to read the
+# panel marker, the cluster-admin binding is live: run cluster setup outpost first.
+pods=$("${k[@]}" get pods -l app=web -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.deletionTimestamp}{"|"}{range .spec.volumes[*]}{.projected.sources[*].serviceAccountToken.path}{end}{"|pod\n"}{end}{"end"}') || exit 46
+[[ $pods == end || $pods == *$'\nend' ]] || exit 46
+while IFS='|' read -r pod deleting projected marker; do
+    [[ $marker == pod && $pod =~ ^web-[a-z0-9]+-[a-z0-9]+$ ]] || exit 46
+    [[ -z $deleting ]] || continue
+    [[ -n $projected ]] || continue
+    decision=$("${k[@]}" exec "$pod" -c web -- /app/check-panel-marker-access 2>/dev/null) || exit 47
+    case "$decision" in allowed) exit 45 ;; denied) ;; *) exit 47 ;; esac
+done < <(printf '%s' "${pods%end}")
+"${k[@]}" apply --server-side --dry-run=server --field-manager=outpost-release -f deploy.yaml >/dev/null || exit 41
+"${k[@]}" apply --server-side --field-manager=outpost-release -f deploy.yaml >/dev/null || exit 43
 kubectl -n wiz-web rollout status deployment/web --timeout=360s >/dev/null || exit 44
 echo 'rollout ready'

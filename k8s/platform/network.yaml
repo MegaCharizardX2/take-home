@@ -23,9 +23,8 @@ spec:
       ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
     - to: [{ipBlock: {cidr: 10.84.2.36/32}}]
       ports: [{protocol: TCP, port: 27017}]
-    # The panel SelfSubjectAccessReview uses the Kubernetes service / private API.
-    - to: [{ipBlock: {cidr: 10.86.0.1/32}}, {ipBlock: {cidr: 10.84.2.0/27}}]
-      ports: [{protocol: TCP, port: 443}]
+    # Outpost: no route to the Kubernetes API. Until the same-pod revocation proof,
+    # that route lives only in web-api-transition.yaml (baseline phase).
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

@@ -12,3 +12,4 @@
 /.trivyignore.yaml @MegaCharizardX2 @msftnadavbh
 /trivy.yaml @MegaCharizardX2 @msftnadavbh
 /.gitleaks.toml @MegaCharizardX2 @msftnadavbh
+/policy/ @MegaCharizardX2 @msftnadavbh

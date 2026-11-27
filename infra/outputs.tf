@@ -9,8 +9,13 @@ output "registry_login_server" {
 }
 
 output "backup_account" {
-  description = "Backup account for the policy-denial evidence and later public-read verification."
+  description = "Private backup account read back by the Outpost evidence job."
   value       = azurerm_storage_account.backup.name
+}
+
+output "backup_stage" {
+  description = "Pipeline 1 stage applied to this state (Outpost is one-way)."
+  value       = var.backup_stage
 }
 
 output "ingress_ip" {
@@ -39,6 +44,6 @@ output "disk_encryption_principal_id" {
 }
 
 output "backup_writer_role_id" {
-  description = "Owner-defined role reserved for the Outpost container-scoped writer grant."
+  description = "Owner-defined write-only role that id-mongo holds on the backup container."
   value       = basename(data.azurerm_role_definition.backup_writer.id)
 }

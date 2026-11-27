@@ -1,2 +1,0 @@
-# Kubernetes file-specific exceptions. Terraform exceptions remain resource annotations.
-ignorefile: .trivyignore.yaml

@@ -23,10 +23,12 @@ resource "azapi_resource" "aks" {
         enableAzureRBAC = true
         tenantID        = data.azurerm_client_config.current.tenant_id
       }
+      # The optional second range is derived from the lab's static NAT IP.
       apiServerAccessProfile = {
         enableVnetIntegration = true
         subnetId              = azurerm_subnet.lab["api"].id
         enablePrivateCluster  = false
+        authorizedIPRanges    = concat([var.aks_api_home_cidr], var.allow_nat_api ? ["${azurerm_public_ip.nat.ip_address}/32"] : [])
       }
       agentPoolProfiles = [for pool in [
         { name = "system", mode = "System", size = "Standard_D4as_v5", count = 2, zones = ["1", "2"] },
@@ -82,7 +84,10 @@ resource "azapi_resource" "aks" {
     azurerm_subnet_network_security_group_association.lab,
     azurerm_subnet_nat_gateway_association.lab, azurerm_nat_gateway_public_ip_association.lab
   ]
-  lifecycle { ignore_changes = [tags["lab-keep-running"]] }
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [tags["lab-keep-running"]]
+  }
 }
 
 resource "azurerm_container_registry" "images" {

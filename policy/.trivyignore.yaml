@@ -1,0 +1,7 @@
+misconfigurations:
+  - id: KSV-0113
+    paths:
+      - platform/traefik-secret-watch.yaml
+      - k8s/platform/traefik-secret-watch.yaml
+    expired_at: LAB_EXPIRY
+    statement: The required Traefik v3.8 Kubernetes Ingress provider waits for a Secret informer. Its controller gets list/watch only in wiz-web.

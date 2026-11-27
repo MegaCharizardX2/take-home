@@ -19,8 +19,8 @@ EXPECTED = ["PASS binding annotation", "PASS ordinary pod admitted", "PASS privi
 class PlanGateTests(unittest.TestCase):
     def setUp(self):
         self.allow = plan_gate.exceptions(ROOT)
-        self.plan = {"planned_values": {"root_module": {"resources": [
-            {"address": ACTOR, "mode": "managed", "values": {"sku": "Basic"}}
+        self.plan = {"variables": {"backup_stage": {"value": "outpost"}, "storage_step": {"value": "B"}}, "planned_values": {"root_module": {"resources": [
+            {"address": ACTOR, "type": "azurerm_container_registry", "mode": "managed", "values": {"sku": "Basic"}}
         ]}}}
         self.report = {"check_type": "terraform_plan",
                        "summary": {"failed": 1, "passed": 1, "skipped": 0, "resource_count": 1, "parsing_errors": 0},
@@ -37,25 +37,26 @@ class PlanGateTests(unittest.TestCase):
                     plan_gate.verify(bad, self.plan, 1, self.allow)
 
     def test_nsg_findings_follow_only_mirrored_reviewed_rules(self):
-        nsg = 'azurerm_network_security_group.lab["mongo"]'
+        nsg = 'azurerm_network_security_group.lab["nodes"]'
         rules = {
-            "azurerm_network_security_rule.ssh": {"name": "Internet-to-mongo-ssh", "network_security_group_name": "nsg-mongo"},
-            "azurerm_network_security_rule.mongo_aks": {"name": "mongo-aks", "network_security_group_name": "nsg-mongo"},
+            "azurerm_network_security_rule.ingress": {"name": "Internet-to-ingress", "network_security_group_name": "nsg-nodes"},
+            "azurerm_network_security_rule.nodes_other": {"name": "nodes-other", "network_security_group_name": "nsg-nodes"},
         }
-        def scan(inline, check="CKV_AZURE_10"):
-            resources = [{"address": a, "mode": "managed", "values": v} for a, v in rules.items()]
-            resources.append({"address": nsg, "mode": "managed",
-                              "values": {"name": "nsg-mongo", "security_rule": [{"name": n} for n in inline]}})
-            plan = {"planned_values": {"root_module": {"resources": resources}}}
+        def scan(inline, check="CKV_AZURE_160"):
+            resources = [{"address": a, "type": "azurerm_network_security_rule", "mode": "managed", "values": v} for a, v in rules.items()]
+            resources.append({"address": nsg, "type": "azurerm_network_security_group", "mode": "managed",
+                              "values": {"name": "nsg-nodes", "security_rule": [{"name": n} for n in inline]}})
+            plan = {"variables": {"backup_stage": {"value": "outpost"}, "storage_step": {"value": "B"}},
+                    "planned_values": {"root_module": {"resources": resources}}}
             report = {"check_type": "terraform_plan",
                       "summary": {"failed": 1, "passed": 1, "skipped": 0, "resource_count": 3, "parsing_errors": 0},
                       "results": {"failed_checks": [{"resource_address": nsg, "check_id": check}]}}
             with patch.object(plan_gate, "lab_exceptions_current", return_value=True):
                 return plan_gate.verify(report, plan, 1, self.allow)
-        self.assertEqual(scan(["Internet-to-mongo-ssh", "mongo-aks"]), 1)
-        for inline, check in ((["Internet-to-mongo-ssh", "rogue-rdp"], "CKV_AZURE_10"),
-                              ([], "CKV_AZURE_10"),
-                              (["Internet-to-mongo-ssh"], "CKV_AZURE_9")):
+        self.assertEqual(scan(["Internet-to-ingress", "nodes-other"]), 1)
+        for inline, check in ((["Internet-to-ingress", "rogue-rdp"], "CKV_AZURE_160"),
+                              ([], "CKV_AZURE_160"),
+                              (["Internet-to-ingress"], "CKV_AZURE_9")):
             with self.subTest(inline=inline, check=check), self.assertRaisesRegex(ValueError, "Unapproved"):
                 scan(inline, check)
 
@@ -68,23 +69,6 @@ class PlanGateTests(unittest.TestCase):
         self.report["summary"]["parsing_errors"] = 1
         with self.assertRaises(ValueError):
             plan_gate.verify(self.report, self.plan, 1, self.allow)
-
-    def test_exemption_cannot_widen_beyond_backup_account(self):
-        scope = f"/subscriptions/{SUB}/resourceGroups/takehome-rg"
-        account = scope + "/providers/Microsoft.Storage/storageAccounts/stoutpost123456789a"
-        resources = {"azurerm_storage_account.backup": {"id": account}}
-        after = {"name": "wiz-public-backup-baseline", "resource_id": account, "exemption_category": "Waiver",
-                 "policy_assignment_id": f"/subscriptions/{SUB}/providers/Microsoft.Authorization/policyAssignments/SecurityCenterBuiltIn",
-                 "policy_definition_reference_ids": ["StorageDisallowPublicAccess"], "expires_on": "2026-12-08T00:00:00Z"}
-        change = {"type": "azurerm_resource_policy_exemption", "address": "azurerm_resource_policy_exemption.backup[0]",
-                  "change": {"actions": ["create"], "after": after}}
-        plan_gate.check_backup_changes({"resource_changes": [change]}, resources)
-        for key, value in (("resource_id", scope), ("policy_definition_reference_ids", []), ("expires_on", None)):
-            with self.subTest(key=key), patch.dict(after, {key: value}), self.assertRaises(ValueError):
-                plan_gate.check_backup_changes({"resource_changes": [change]}, resources)
-        with patch.dict(change, {"type": "azurerm_resource_group_policy_exemption"}), self.assertRaises(ValueError):
-            plan_gate.check_backup_changes({"resource_changes": [change]}, resources)
-
 
 class PanelTests(unittest.TestCase):
     def test_remote_protocol_and_attribution(self):

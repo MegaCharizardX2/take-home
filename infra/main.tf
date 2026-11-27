@@ -13,7 +13,7 @@ locals {
   location = "eastus2"
   tags = {
     owner   = "takehome"
-    expires = "2026-12-08"
+    expires = trimspace(file("${path.module}/lab-expiry.txt"))
   }
   subnet_ranges = {
     nodes     = "10.84.0.0/24"

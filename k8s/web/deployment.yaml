@@ -5,8 +5,7 @@ metadata:
   namespace: wiz-web
   labels: {app: web, app.kubernetes.io/part-of: outpost}
   annotations:
-    checkov.io/skip1: "CKV_K8S_38=The PDF requires the web service account's cluster-admin credential for the baseline marker review."
-    checkov.io/skip2: "CKV_K8S_35=The PDF requires MongoDB access via a Kubernetes environment variable; both credentials use secretKeyRef."
+    checkov.io/skip1: "CKV_K8S_35=The PDF requires MongoDB access via a Kubernetes environment variable; both credentials use secretKeyRef."
 spec:
   replicas: 2
   revisionHistoryLimit: 2
@@ -23,7 +22,8 @@ spec:
         outpost.wiz/revision: "0000000000000000000000000000000000000000"
     spec:
       serviceAccountName: web
-      automountServiceAccountToken: true
+      # Outpost: the web identity has no Kubernetes role and no API credential.
+      automountServiceAccountToken: false
       enableServiceLinks: false
       nodeSelector:
         workload: web
@@ -57,10 +57,6 @@ spec:
           resources:
             requests: {cpu: 10m, memory: 8Mi, ephemeral-storage: 1Mi}
             limits: {cpu: 50m, memory: 32Mi, ephemeral-storage: 8Mi}
-          # The probe needs only TCP. An existing mount here prevents Kubernetes
-          # from projecting the web service account credential into the init container.
-          volumeMounts:
-            - {name: tmp, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
       containers:
         - name: web
           image: acroutpost0000000000.azurecr.io/tasky@sha256:0000000000000000000000000000000000000000000000000000000000000000

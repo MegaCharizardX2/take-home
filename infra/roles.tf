@@ -19,10 +19,9 @@ resource "azurerm_role_assignment" "kubelet_operator" {
 
 resource "azurerm_role_assignment" "lab" {
   for_each = {
-    vm_compute    = ["id-mongo", "Virtual Machine Contributor", local.rg.id]
-    vm_backup     = ["id-mongo", "Storage Blob Data Contributor", azurerm_storage_container.backups.id]
+    # Outpost least privilege: the VM's only Azure right is creating backup blobs.
+    vm_writer     = ["id-mongo", "Lab Backup Writer", azurerm_storage_container.backups.id]
     reader        = ["id-backup-reader", "Storage Blob Data Reader", azurerm_storage_container.backups.id]
-    cmk           = ["id-backup-cmk", "Key Vault Crypto Service Encryption User", azurerm_key_vault_key.backup.resource_versionless_id]
     infra_admin   = ["takehome-id", "Azure Kubernetes Service RBAC Cluster Admin", azapi_resource.aks.id]
     release_write = ["id-release", "Azure Kubernetes Service RBAC Writer", "${azapi_resource.aks.id}/namespaces/wiz-web"]
     release_run   = ["id-release", "Lab AKS Run Command", azapi_resource.aks.id]
@@ -77,8 +76,23 @@ resource "azurerm_role_assignment" "mongo_disk_key" {
   principal_type       = "ServicePrincipal"
 }
 
-# The Owner defines this before granting delegation. Outpost assigns it to
-# id-mongo on the backup container after the baseline evidence is collected.
+# The storage account's CMK update must follow this grant. It sat in the map
+# above during Phase 1; the move keeps the live assignment in place.
+resource "azurerm_role_assignment" "backup_cmk" {
+  scope                = azurerm_key_vault_key.backup.resource_versionless_id
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = local.identities["id-backup-cmk"].principal_id
+  principal_type       = "ServicePrincipal"
+}
+
+moved {
+  from = azurerm_role_assignment.lab["cmk"]
+  to   = azurerm_role_assignment.backup_cmk
+}
+
+# The Owner defines this write-only role. Outpost assigns it to id-mongo on the
+# backup container in place of Virtual Machine Contributor and Storage Blob Data
+# Contributor. Put Blob with If-None-Match needs only these two data actions.
 data "azurerm_role_definition" "backup_writer" {
   name  = "Lab Backup Writer"
   scope = local.rg.id

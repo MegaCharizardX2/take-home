@@ -56,6 +56,8 @@ resource "azurerm_network_security_rule" "mongo" {
   for_each = {
     aks    = { priority = 100, access = "Allow", source = local.subnet_ranges.nodes, port = "27017" }
     others = { priority = 110, access = "Deny", source = "*", port = "27017" }
+    # Outpost: no SSH from any source, ahead of Azure's default VNet allow.
+    ssh-deny = { priority = 130, access = "Deny", source = "*", port = "22" }
   }
   name                        = "mongo-${each.key}"
   resource_group_name         = local.rg.name
